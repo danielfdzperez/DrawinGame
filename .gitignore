@@ -23,3 +23,63 @@ mono_crash.*.json
 *.exe
 # Uncomment if your project does not version PCK files as runtime dependencies.
 # *.pck
+
+# ---------- C# / .NET ----------
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+*.user
+*.suo
+*.userprefs
+*.pdb
+*.nupkg
+.vs/
+*.rsuo
+TestResults/
+*.log
+
+# ---------- Python ----------
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- PyInstaller ----------
+build/
+dist/
+# build.spec se versiona; los .spec autogenerados no hacen falta
+# (descomenta la siguiente línea si prefieres ignorar todos)
+# *.spec
+
+# ---------- IDEs / editores ----------
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---------- Sistema operativo ----------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# ---------- Claude Code (config local) ----------
+.claude/settings.local.json
+
+# ---------- Capturas / temporales ----------
+*.bak
+*.temp
+
+# ---------- Motor Godot descargado en el repo (no se sube) ----------
+Godot_v*/
+
+# ---------- Vídeos (no se suben) ----------
+Videos/
+videos/

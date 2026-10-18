@@ -1,0 +1,27 @@
+[gd_scene format=3 uid="uid://deuyupxivo15"]
+
+[ext_resource type="Script" uid="uid://dvdp04axylg28" path="res://scripts/Main.cs" id="1_0xm2m"]
+[ext_resource type="PackedScene" uid="uid://clrefiruoein1" path="res://scenes/player.tscn" id="1_ig7tw"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_260lg"]
+size = Vector2(1000, 40)
+
+[node name="Main" type="Node2D" unique_id=1581025873]
+script = ExtResource("1_0xm2m")
+
+[node name="FLoor" type="StaticBody2D" parent="." unique_id=706763390]
+position = Vector2(572, 647)
+rotation = -3.1415927
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="FLoor" unique_id=2134160184]
+shape = SubResource("RectangleShape2D_260lg")
+
+[node name="ColorRect" type="ColorRect" parent="FLoor" unique_id=646439255]
+offset_left = -500.0
+offset_top = -20.0
+offset_right = 500.0
+offset_bottom = 20.0
+color = Color(0, 1, 1, 1)
+
+[node name="Player" parent="." unique_id=1005797664 instance=ExtResource("1_ig7tw")]
+position = Vector2(587, 365)
