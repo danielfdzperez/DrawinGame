@@ -27,6 +27,7 @@ public class ShapeStabilizer
 
     private class Track
     {
+        public int Id;
         public DetectedShape Stable = null!;
         public DetectedShape? Candidate;
         public int CandidateCount;
@@ -36,6 +37,7 @@ public class ShapeStabilizer
     }
 
     private readonly List<Track> _tracks = new();
+    private int _nextId;   // los identificadores no se reutilizan
 
     public void Reset() => _tracks.Clear();
 
@@ -96,7 +98,7 @@ public class ShapeStabilizer
 
             // Movimiento rápido: se acepta al instante
             var track = _tracks[t];
-            track.Stable = detected[s];
+            track.Stable = detected[s] with { Id = track.Id };
             track.Candidate = null;
             track.CandidateCount = 0;
             track.Missed = 0;
@@ -118,7 +120,8 @@ public class ShapeStabilizer
         for (int s = 0; s < detected.Count; s++)
         {
             if (detUsed[s]) continue;
-            _tracks.Add(new Track { Stable = detected[s], Confirmed = AppearFrames <= 1 });
+            int id = ++_nextId;
+            _tracks.Add(new Track { Id = id, Stable = detected[s] with { Id = id }, Confirmed = AppearFrames <= 1 });
         }
 
         return _tracks.Where(t => t.Confirmed).Select(t => t.Stable).ToList();
@@ -143,7 +146,7 @@ public class ShapeStabilizer
                                 MovedFraction(det, track.Stable, tolerance));
         if (moved >= MotionFraction)
         {
-            track.Stable = det;
+            track.Stable = det with { Id = track.Id };
             track.Candidate = null;
             track.CandidateCount = 0;
             return;
@@ -156,7 +159,7 @@ public class ShapeStabilizer
             track.Candidate = det;
             if (track.CandidateCount >= LocalChangeFrames)
             {
-                track.Stable = det;
+                track.Stable = det with { Id = track.Id };
                 track.Candidate = null;
                 track.CandidateCount = 0;
             }

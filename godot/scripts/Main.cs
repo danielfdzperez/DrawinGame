@@ -15,11 +15,17 @@ public class AppConfig
 {
 	public int CameraIndex { get; set; } = -1;
 	public float[]? Area { get; set; }
-	public int Threshold { get; set; } = 100;
-	public int Contrast { get; set; } = 40;
-	public int Simplify { get; set; } = 3;
+	public int Simplify { get; set; } = 2;
 	public int Stability { get; set; } = 4;
+	public int Sensitivity { get; set; } = 0;   // 0 = automática
+	public int ColorMin { get; set; } = 0;      // 0 = automático
 	public bool ShowDetection { get; set; } = true;
+
+	/// <summary>true = la estrella es el propio dibujo amarillo y se borra de la imagen al cogerla; false = se pone una estrella dibujada.</summary>
+	public bool StarsAsDrawing { get; set; } = true;
+
+	/// <summary>Qué hace cada color: nombre del color (Black, Red, Yellow, Green, Blue) → tipo (Platform, Hazard, Star, Start, None).</summary>
+	public Dictionary<string, string> ColorRules { get; set; } = LevelRules.Defaults();
 }
 
 /// <summary>
@@ -41,10 +47,12 @@ public partial class Main : Node2D
 	private bool _menuOpen;
 
 	// Elementos de la escena
-	private CharacterBody2D? _player;
+	private Player? _player;
 	private Node2D? _floor;
 	private Vector2 _spawn;
-	private readonly Node2D _level = new() { Name = "Level" };
+	private readonly LevelManager _level = new() { Name = "Level" };
+	private bool _won;
+	private bool _placePlayer;
 	private readonly TextureRect _preview = new();
 	private ImageTexture? _texture;
 	private long _version;
@@ -62,10 +70,16 @@ public partial class Main : Node2D
 
 	public override void _Ready()
 	{
-		_player = GetNodeOrNull<CharacterBody2D>("Player");
-		_floor = GetNodeOrNull<Node2D>("Floor");
-		if (_player != null) _spawn = _player.Position;
+		_player = GetNodeOrNull<Player>("Player");
+		_floor = GetNodeOrNull<Node2D>("FLoor") ?? GetNodeOrNull<Node2D>("Floor");
+		if (_player != null)
+		{
+			_spawn = _player.Position;
+			_player.Died += RespawnPlayer;
+		}
 
+		_level.StarsChanged += OnStarsChanged;
+		_level.AllStarsCollected += OnAllStars;
 		AddChild(_level);
 
 		// Imagen de la cámara por detrás del juego
@@ -101,14 +115,13 @@ public partial class Main : Node2D
 
 		if (_state == AppState.Game && !_menuOpen
 			&& _camera.TryGetShapes(ref _version, out var shapes, out int sw, out int sh))
-			RebuildLevel(shapes, sw, sh);
+			UpdateLevel(shapes, sw, sh);
 
 		// Si el personaje cae fuera de la pantalla, vuelve al inicio
 		if (_state == AppState.Game && _player != null
 			&& _player.Position.Y > GetViewportRect().Size.Y + 300)
 		{
-			_player.Position = _spawn;
-			_player.Velocity = Vector2.Zero;
+			RespawnPlayer();
 		}
 	}
 
@@ -123,6 +136,8 @@ public partial class Main : Node2D
 		// Al salir de la pantalla de área se guardan las esquinas
 		if (_state == AppState.AreaSelect && next != AppState.AreaSelect)
 			StoreArea();
+
+		if (next != AppState.Game) _camera.SetErasedIds(Array.Empty<int>());   // fuera del juego se ve la imagen completa
 
 		_state = next;
 		_drag = -1;
@@ -162,6 +177,9 @@ public partial class Main : Node2D
 				_camera.SetCalibration(false, Array.Empty<OpenCvSharp.Point2f>());
 				_camera.ShowDetection = _config.ShowDetection;
 				_version = -1;                     // fuerza a construir el nivel con lo último detectado
+				_level.Clear();                    // partida nueva: sin objetos ni estrellas cogidas
+				_won = false;
+				_placePlayer = true;               // el jugador empieza en la figura azul (si hay)
 				BuildGameScreen();
 				break;
 		}
@@ -182,7 +200,7 @@ public partial class Main : Node2D
 	private void ToggleMenu()
 	{
 		_menuOpen = !_menuOpen;
-		SetPlayerActive(!_menuOpen);
+		SetPlayerActive(!_menuOpen && !_won);
 		ShowMenu(_menuOpen);
 	}
 
@@ -195,10 +213,12 @@ public partial class Main : Node2D
 
 	private void ApplyParams()
 	{
-		_camera.Threshold = _config.Threshold;
-		_camera.Contrast = _config.Contrast;
 		_camera.Simplify = _config.Simplify;
 		_camera.Stability = _config.Stability;
+		_camera.Sensitivity = _config.Sensitivity;
+		_camera.ColorMin = _config.ColorMin;
+		_level.SetRules(LevelRules.Parse(_config.ColorRules));
+		_level.StarsAsDrawing = _config.StarsAsDrawing;
 	}
 
 	private void SetShowDetection(bool on)
@@ -270,37 +290,56 @@ public partial class Main : Node2D
 		}
 	}
 
-	// ------------------------------------------------------------ Nivel (colisiones)
+	// ------------------------------------------------------------ Nivel
 
-	private void RebuildLevel(List<DetectedShape> shapes, int width, int height)
+	/// <summary>Pasa las figuras estables al gestor del nivel, que crea/actualiza/elimina los objetos de Godot.</summary>
+	private void UpdateLevel(List<DetectedShape> shapes, int width, int height)
 	{
-		foreach (var child in _level.GetChildren())
-			child.QueueFree();
+		_level.Apply(shapes, width, height, GetViewportRect().Size);
 
-		_level.Position = ((GetViewportRect().Size - new Vector2(width, height)) / 2).Round();
-
-		foreach (var shape in shapes)
+		// Al empezar, el jugador aparece en la figura azul en cuanto se ve (o se queda en el punto por defecto)
+		if (_placePlayer)
 		{
-			var body = new StaticBody2D();
-			body.AddChild(MakeCollision(shape.Outline));
-			foreach (var hole in shape.Holes)
-				body.AddChild(MakeCollision(hole));
-			_level.AddChild(body);
+			if (_level.HasSpawn)
+			{
+				RespawnPlayer();
+				_placePlayer = false;
+			}
+			else if (shapes.Count > 0)
+			{
+				_placePlayer = false;
+			}
 		}
 	}
 
-	private static CollisionPolygon2D MakeCollision(OpenCvSharp.Point[] ring)
+	private void RespawnPlayer()
 	{
-		var pts = new Vector2[ring.Length];
-		for (int i = 0; i < ring.Length; i++)
-			pts[i] = new Vector2(ring[i].X, ring[i].Y);
+		if (_player == null) return;
+		_player.GlobalPosition = _level.HasSpawn ? _level.SpawnPoint : _spawn;
+		_player.Velocity = Vector2.Zero;
+	}
 
-		// Segments = colisión solo en las aristas: válido para huecos, cóncavas y trazos finos
-		return new CollisionPolygon2D
-		{
-			Polygon = pts,
-			BuildMode = CollisionPolygon2D.BuildModeEnum.Segments
-		};
+	private void OnStarsChanged()
+	{
+		UpdateHud();
+		// Con la estrella como dibujo, las cogidas se borran de la imagen
+		_camera.SetErasedIds(_config.StarsAsDrawing ? _level.CollectedStarIds() : Array.Empty<int>());
+	}
+
+	private void OnAllStars()
+	{
+		_won = true;
+		SetPlayerActive(false);
+		ShowWin(true);
+	}
+
+	private void RestartGame()
+	{
+		_won = false;
+		ShowWin(false);
+		_level.ResetStars();
+		SetPlayerActive(true);
+		RespawnPlayer();
 	}
 
 	// ------------------------------------------------------------ Entrada

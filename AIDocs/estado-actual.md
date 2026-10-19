@@ -1,5 +1,11 @@
 # Estado actual y traspaso (2026-10-19)
 
+> **ACTUALIZACIÓN 2026-10-19 (tarde)** — todo escrito a ciegas, pendiente de compilar y probar:
+> 1. Prototipo: `DrawingDetector` v4 (`vision.md` §v4): máscara → color por píxel (`ClassifyInk`) → figuras por región de color; `SplitByColor` eliminado; `Paint` usa colores fijos por familia; `DetectedShape` tiene `Id`, `Centroid`, `Area`; `ShapeStabilizer` asigna Ids estables.
+> 2. Godot (`godot.md` §11): `godot/vision` ya usa el detector nuevo; `LevelManager` (tabla color→tipo en `config.json`, un objeto por Id que se actualiza o recrea), `Star` + `scenes/star.tscn`, `Player.Died`; reglas: negro=plataforma, rojo=daño, amarillo=estrella, azul=inicio del jugador, verde=ninguna; victoria al coger todas las estrellas.
+> 3. Lo de abajo sobre Godot («NO actualizado») y sobre `SplitByColor`/clasificación por figura queda obsoleto.
+
+
 Documento para retomar el trabajo en otra conversación. Leer primero `CLAUDE.md` (reglas) y luego este archivo; el detalle técnico está en los demás `AIDocs/*.md`.
 
 ## 1. Proyecto

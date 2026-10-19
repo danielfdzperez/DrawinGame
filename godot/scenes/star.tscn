@@ -1,0 +1,20 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/Star.cs" id="1_star"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_star"]
+radius = 24.0
+
+[node name="Star" type="Area2D"]
+script = ExtResource("1_star")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_star")
+
+[node name="Outline" type="Polygon2D" parent="."]
+color = Color(0.55, 0.38, 0, 1)
+polygon = PackedVector2Array(0.0, -28.0, 7.1, -9.7, 26.6, -8.7, 11.4, 3.7, 16.5, 22.7, 0.0, 12.0, -16.5, 22.7, -11.4, 3.7, -26.6, -8.7, -7.1, -9.7)
+
+[node name="Polygon2D" type="Polygon2D" parent="."]
+color = Color(1, 0.84, 0.1, 1)
+polygon = PackedVector2Array(0.0, -23.0, 5.6, -7.7, 21.9, -7.1, 9.0, 2.9, 13.5, 18.6, 0.0, 9.5, -13.5, 18.6, -9.0, 2.9, -21.9, -7.1, -5.6, -7.7)

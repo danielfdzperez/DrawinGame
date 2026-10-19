@@ -11,7 +11,25 @@ public enum InkColor { Black, Red, Yellow, Green, Blue }
 /// </summary>
 public record DetectedShape(OpenCvSharp.Point[] Outline, List<OpenCvSharp.Point[]> Holes, InkColor Ink, Scalar Color)
 {
+    /// <summary>Identificador estable entre fotogramas (lo asigna ShapeStabilizer; 0 = sin asignar).</summary>
+    public int Id { get; init; }
+
     public int VertexCount => Outline.Length + Holes.Sum(h => h.Length);
+
+    /// <summary>Área de la figura (contorno menos huecos), en píxeles.</summary>
+    public double Area => Math.Abs(Cv2.ContourArea(Outline)) - Holes.Sum(h => Math.Abs(Cv2.ContourArea(h)));
+
+    /// <summary>Centroide del contorno exterior, en píxeles de la imagen.</summary>
+    public Point2d Centroid
+    {
+        get
+        {
+            var m = Cv2.Moments(Outline);
+            if (Math.Abs(m.M00) < 1e-6)
+                return new Point2d(Outline.Average(p => (double)p.X), Outline.Average(p => (double)p.Y));
+            return new Point2d(m.M10 / m.M00, m.M01 / m.M00);
+        }
+    }
 }
 
 /// <summary>Ajustes de la detección.</summary>

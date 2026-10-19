@@ -63,3 +63,7 @@ La primera vez descarga los paquetes NuGet (OpenCvSharp4), así que necesita int
 - `ShapeStabilizer.cs`: estabilización entre fotogramas (seguimiento de formas con histéresis).
 - `ImageFilter.cs`: cadena de filtros (temporal, bilateral, balance de blancos, iluminación, CLAHE, realce de color).
 - `DrawingDetector.cs`: detección por clases de color (negro + bandas de matiz) sobre la imagen filtrada → polígonos simplificados con huecos y color medio; dibujado en el color de cada figura.
+
+## Cambios 2026-10-19
+- Detección de color por píxel (imagen × máscara) y fijado de la paleta de dibujo: cada familia se pinta con su color fijo.
+- `DetectedShape` ahora tiene `Id` (asignado por `ShapeStabilizer`), `Centroid` y `Area`.

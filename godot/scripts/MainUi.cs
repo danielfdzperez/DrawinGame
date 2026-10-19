@@ -11,6 +11,7 @@ public partial class Main
 	private Button? _areaContinue;
 	private Label? _hud;
 	private Control? _menuRoot;
+	private Control? _winRoot;
 
 	// ------------------------------------------------------------ Base
 
@@ -42,6 +43,7 @@ public partial class Main
 		_areaContinue = null;
 		_hud = null;
 		_menuRoot = null;
+		_winRoot = null;
 	}
 
 	private void SetScreen(Control screen)
@@ -212,27 +214,31 @@ public partial class Main
 		panel.AddChild(box);
 
 		box.AddChild(MakeLabel("Paso 3 de 3 · Ajustes", 22));
-		var help = MakeLabel("Lo verde es lo que se detecta. Ajusta hasta que cubra tu dibujo y nada más.");
+		var help = MakeLabel("Las figuras se pintan con su color: negro = plataforma, rojo = daño, amarillo = estrella, azul = inicio del jugador.");
 		help.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		help.CustomMinimumSize = new Vector2(TuningPanelWidth - 30, 0);
 		box.AddChild(help);
 
-		AddSlider(box, "Umbral negro", 0, 255, _config.Threshold,
-			"Qué tan oscuro es «negro». Súbelo si no detecta trazos gruesos; bájalo si detecta grises.",
-			v => { _config.Threshold = v; ApplyParams(); });
-		AddSlider(box, "Contraste fino", 0, 100, _config.Contrast,
-			"Para trazos finos. Bájalo si no los detecta; súbelo si hay ruido. 0 = desactivado.",
-			v => { _config.Contrast = v; ApplyParams(); });
 		AddSlider(box, "Simplificación (px)", 0, 20, _config.Simplify,
 			"Más alto = menos vértices y formas más angulosas.",
 			v => { _config.Simplify = v; ApplyParams(); });
 		AddSlider(box, "Estabilidad (px)", 0, 15, _config.Stability,
-			"Más alto = menos temblor. 0 = desactivado.",
+			"Más alto = menos temblor. Mínimo efectivo 1.",
 			v => { _config.Stability = v; ApplyParams(); });
+		AddSlider(box, "Sensibilidad (0 = auto)", 0, 40, _config.Sensitivity,
+			"Cuánto se tiene que diferenciar un trazo del papel. 0 = se calcula sola.",
+			v => { _config.Sensitivity = v; ApplyParams(); });
+		AddSlider(box, "Color mínimo (0 = auto)", 0, 30, _config.ColorMin,
+			"Cuánto color hace falta para no ser negro. Bájalo si un azul oscuro sale negro. 0 = auto.",
+			v => { _config.ColorMin = v; ApplyParams(); });
 
-		var check = new CheckBox { Text = "Ver las formas (verde) durante el juego", ButtonPressed = _config.ShowDetection };
+		var check = new CheckBox { Text = "Ver las formas (coloreadas) durante el juego", ButtonPressed = _config.ShowDetection };
 		check.Toggled += on => _config.ShowDetection = on;
 		box.AddChild(check);
+
+		var starCheck = new CheckBox { Text = "Estrella = el propio dibujo amarillo (se borra al cogerla)", ButtonPressed = _config.StarsAsDrawing };
+		starCheck.Toggled += on => { _config.StarsAsDrawing = on; ApplyParams(); };
+		box.AddChild(starCheck);
 
 		box.AddChild(MakeSpacer());
 
@@ -319,6 +325,20 @@ public partial class Main
 		screen.AddChild(center);
 		_menuRoot = center;
 
+		// Pantalla de victoria (oculta hasta coger todas las estrellas)
+		var winCenter = (CenterContainer)FullRect(new CenterContainer { MouseFilter = Control.MouseFilterEnum.Ignore });
+		var winPanel = MakePanel(0.95f);
+		var winBox = new VBoxContainer();
+		winBox.AddThemeConstantOverride("separation", 10);
+		winBox.AddChild(MakeLabel("¡Has ganado!", 32));
+		winBox.AddChild(MakeLabel("Has cogido todas las estrellas."));
+		winBox.AddChild(MakeButton("Jugar de nuevo", RestartGame, 260));
+		winPanel.AddChild(winBox);
+		winCenter.AddChild(winPanel);
+		winCenter.Visible = false;
+		screen.AddChild(winCenter);
+		_winRoot = winCenter;
+
 		SetScreen(screen);
 		UpdateHud();
 	}
@@ -328,9 +348,14 @@ public partial class Main
 		if (_menuRoot != null) _menuRoot.Visible = open;
 	}
 
+	private void ShowWin(bool show)
+	{
+		if (_winRoot != null) _winRoot.Visible = show;
+	}
+
 	private void UpdateHud()
 	{
 		if (_hud != null)
-			_hud.Text = $"V = {(_config.ShowDetection ? "ocultar" : "ver")} formas  |  Mover: A/D o flechas  |  Saltar: W o espacio  |  Esc = menú";
+			_hud.Text = $"Estrellas {_level.StarsCollected}/{_level.StarsTotal}  |  V = {(_config.ShowDetection ? "ocultar" : "ver")} formas  |  Mover: A/D o flechas  |  Saltar: W o espacio  |  Esc = menú";
 	}
 }

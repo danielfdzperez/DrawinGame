@@ -27,6 +27,7 @@ public class ShapeStabilizer
 
     private class Track
     {
+        public int Id;
         public DetectedShape Stable = null!;
         public DetectedShape? Candidate;
         public int CandidateCount;
@@ -36,6 +37,7 @@ public class ShapeStabilizer
     }
 
     private readonly List<Track> _tracks = new();
+    private int _nextId;   // los identificadores no se reutilizan
 
     public void Reset() => _tracks.Clear();
 
@@ -59,6 +61,7 @@ public class ShapeStabilizer
             var tb = Cv2.BoundingRect(_tracks[t].Stable.Outline);
             for (int s = 0; s < detected.Count; s++)
             {
+                if (_tracks[t].Stable.Ink != detected[s].Ink) continue; // solo se empareja el mismo color
                 if (!Overlaps(tb, detBoxes[s], MatchDistance)) continue;
                 double d = Distance(_tracks[t].Stable, detected[s]);
                 if (d <= MatchDistance) pairs.Add((d, t, s));
@@ -80,6 +83,7 @@ public class ShapeStabilizer
             for (int s = 0; s < detected.Count; s++)
             {
                 if (detUsed[s]) continue;
+                if (_tracks[t].Stable.Ink != detected[s].Ink) continue; // solo se empareja el mismo color
                 var (dc, da) = CentroidArea(detected[s]);
                 double dist = Math.Sqrt((tc.X - dc.X) * (tc.X - dc.X) + (tc.Y - dc.Y) * (tc.Y - dc.Y));
                 double ratio = ta > 0 ? da / ta : 0;
@@ -94,7 +98,7 @@ public class ShapeStabilizer
 
             // Movimiento rápido: se acepta al instante
             var track = _tracks[t];
-            track.Stable = detected[s];
+            track.Stable = detected[s] with { Id = track.Id };
             track.Candidate = null;
             track.CandidateCount = 0;
             track.Missed = 0;
@@ -116,7 +120,8 @@ public class ShapeStabilizer
         for (int s = 0; s < detected.Count; s++)
         {
             if (detUsed[s]) continue;
-            _tracks.Add(new Track { Stable = detected[s], Confirmed = AppearFrames <= 1 });
+            int id = ++_nextId;
+            _tracks.Add(new Track { Id = id, Stable = detected[s] with { Id = id }, Confirmed = AppearFrames <= 1 });
         }
 
         return _tracks.Where(t => t.Confirmed).Select(t => t.Stable).ToList();
@@ -141,7 +146,7 @@ public class ShapeStabilizer
                                 MovedFraction(det, track.Stable, tolerance));
         if (moved >= MotionFraction)
         {
-            track.Stable = det;
+            track.Stable = det with { Id = track.Id };
             track.Candidate = null;
             track.CandidateCount = 0;
             return;
@@ -154,7 +159,7 @@ public class ShapeStabilizer
             track.Candidate = det;
             if (track.CandidateCount >= LocalChangeFrames)
             {
-                track.Stable = det;
+                track.Stable = det with { Id = track.Id };
                 track.Candidate = null;
                 track.CandidateCount = 0;
             }

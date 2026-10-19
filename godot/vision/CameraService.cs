@@ -13,10 +13,10 @@ public sealed class CameraService : IDisposable
     private const int MinSize = 20;
 
     // Parámetros (se pueden cambiar en caliente desde el hilo principal)
-    public volatile int Threshold = 100;
-    public volatile int Contrast = 40;
-    public volatile int Simplify = 3;
+    public volatile int Simplify = 2;
     public volatile int Stability = 4;
+    public volatile int Sensitivity = 0;         // sensibilidad manual (0 = automática)
+    public volatile int ColorMin = 0;            // diferencia de color mínima manual (0 = automática)
     public volatile bool ShowDetection = true;   // dibujar (o no) las formas detectadas sobre la imagen
 
     public string? Error { get; private set; }
@@ -37,6 +37,8 @@ public sealed class CameraService : IDisposable
     private byte[]? _preview;                        // última imagen RGB
     private int _previewW, _previewH;
     private bool _previewNew;
+
+    private int[] _erasedIds = Array.Empty<int>();   // figuras (por Id) cuyo dibujo se borra de la imagen mostrada
 
     private List<DetectedShape> _shapes = new();
     private int _shapesW, _shapesH;
@@ -78,6 +80,12 @@ public sealed class CameraService : IDisposable
             _calibrating = on;
             _calibPoints = points;
         }
+    }
+
+    /// <summary>Figuras que se borran de la imagen mostrada (se rellena con el tono del papel de alrededor). No afecta a la detección.</summary>
+    public void SetErasedIds(int[] ids)
+    {
+        lock (_lock) _erasedIds = ids;
     }
 
     public bool TryGetPreview(out byte[] data, out int width, out int height)
@@ -133,7 +141,11 @@ public sealed class CameraService : IDisposable
             }
 
             using var frame = new Mat();
+            using var filter = new ImageFilter();
             var stabilizer = new ShapeStabilizer();
+            // Valores de filtro validados en el prototipo
+            var filters = new FilterSettings(TemporalPct: 0, SpatialLevel: 10, WhiteBalance: true,
+                                             IlluminationPct: 0, ClaheLevel: 4, ColorBoostPct: 100);
             bool lastFlat = false;
 
             while (_running)
@@ -183,11 +195,20 @@ public sealed class CameraService : IDisposable
                         if (isFlat != lastFlat)
                         {
                             stabilizer.Reset();
+                            filter.Reset();
                             lastFlat = isFlat;
                         }
 
-                        var detected = DrawingDetector.Detect(work, Threshold, Contrast, MinSize, Simplify);
-                        var shapes = stabilizer.Update(detected, Stability);
+                        // Imagen filtrada -> detector (máscara + color por píxel + figuras) -> estabilizador (con Id)
+                        using var filtered = filter.Apply(work, filters);
+                        int sens = Sensitivity, colorMin = ColorMin;
+                        var settings = new DetectionSettings(
+                            InkDifference: sens > 0 ? sens : 19, ColorDifference: colorMin > 0 ? colorMin : 7,
+                            MinSize: MinSize, Epsilon: Simplify,
+                            AutoSensitivity: sens == 0, AutoColor: colorMin == 0, InferShapes: true);
+                        var detected = DrawingDetector.Detect(filtered, settings, out Mat mask, out _, out _);
+                        mask.Dispose();
+                        var shapes = stabilizer.Update(detected, Math.Max(1, Stability));   // con 0 no habría Ids estables
 
                         lock (_lock)
                         {
@@ -200,8 +221,19 @@ public sealed class CameraService : IDisposable
                             }
                         }
 
+                        // Solo en la imagen mostrada (la detección ya se hizo): borrar lo que el juego da por recogido
+                        int[] erased;
+                        lock (_lock) erased = _erasedIds;
+                        var visible = shapes;
+                        if (erased.Length > 0)
+                        {
+                            foreach (var shape in shapes)
+                                if (erased.Contains(shape.Id)) Erase(work, shape);
+                            visible = shapes.Where(shape => !erased.Contains(shape.Id)).ToList();
+                        }
+
                         if (ShowDetection)
-                            DrawingDetector.Paint(work, shapes); // superposición verde de depuración
+                            DrawingDetector.Paint(work, visible); // figuras con el color de su familia
                     }
 
                     PublishPreview(work);
@@ -220,6 +252,25 @@ public sealed class CameraService : IDisposable
         {
             _running = false;
         }
+    }
+
+    /// <summary>Rellena la zona de la figura con el tono del papel que la rodea (inpainting en una ventana pequeña).</summary>
+    private static void Erase(Mat image, DetectedShape shape)
+    {
+        var box = Cv2.BoundingRect(shape.Outline);
+        box = new Rect(box.X - 20, box.Y - 20, box.Width + 40, box.Height + 40).Intersect(new Rect(0, 0, image.Width, image.Height));
+        if (box.Width <= 0 || box.Height <= 0) return;
+
+        using var roi = new Mat(image, box);
+        using var mask = new Mat(box.Size, MatType.CV_8UC1, Scalar.All(0));
+        var shift = new OpenCvSharp.Point(-box.X, -box.Y);
+        Cv2.FillPoly(mask, new[] { shape.Outline.Select(p => p + shift).ToArray() }, Scalar.All(255));
+        using var grow = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(9, 9));
+        Cv2.Dilate(mask, mask, grow);   // incluye el borde difuminado del trazo
+
+        using var result = new Mat();
+        Cv2.Inpaint(roi, mask, result, 5, InpaintMethod.Telea);
+        result.CopyTo(roi);
     }
 
     private void PublishPreview(Mat bgr)

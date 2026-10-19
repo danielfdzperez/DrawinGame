@@ -111,3 +111,25 @@ DrawinGame/
 - Configuración guardada en `user://config.json` (cámara, esquinas, parámetros, ver formas). En Windows: `%APPDATA%\Godot\app_userdata\DrawingGame\`.
 - El personaje y el suelo de prueba (`Floor`) solo están activos en el juego. Si el personaje cae fuera de pantalla vuelve al punto de inicio.
 - Pendiente de comprobar en el PC del usuario: carga de OpenCvSharp (DLL nativa) en Godot, rendimiento y calidad de las colisiones.
+
+## 11. Visión nueva y nivel con objetos (2026-10-19)
+`godot/vision/` ya usa el detector nuevo del prototipo (copias con solo el namespace cambiado: `ImageFilter`, `DrawingDetector`, `ShapeStabilizer`). `CameraService` filtra → detecta (máscara + color por píxel, ver `vision.md` v4) → estabiliza. Ajustes de UI: Simplificación, Estabilidad, Sensibilidad (0 = auto), Color mínimo (0 = auto).
+
+### Datos detector → juego
+No hay JSON: el hilo de cámara deja en memoria un `List<DetectedShape>` y `Main._Process` lo recoge con `TryGetShapes` (lock + número de versión). `DetectedShape` = `Outline`, `Holes`, `Ink` (Black/Red/Yellow/Green/Blue), `Color` (media real), **`Id` estable** (lo asigna `ShapeStabilizer` y se mantiene mientras la figura se reconoce como la misma), `Centroid`, `Area`. Con Estabilidad 0 el estabilizador no asigna Ids, por eso Godot usa como mínimo 1.
+
+### Reglas por color (`scripts/LevelManager.cs`)
+Tabla `ColorRules` en `user://config.json` (color → tipo). Por defecto: Black → Platform (StaticBody2D, solo colisión), Red → Hazard (StaticBody2D del grupo `hazard`; `Player` muere al tocarlo y reaparece), Yellow → Star (escena `scenes/star.tscn` + `Star.cs` en el centroide; ignora la forma), Blue → Start (el jugador aparece en su centroide), Green → None. Tipos: `ObjectKind { None, Platform, Hazard, Star, Start }`. Para añadir un tipo: valor en el enum + rama en `LevelManager.CreateEntry/UpdateEntry`.
+
+### Regenerador
+`LevelManager.Apply` mantiene un objeto de Godot por `Id`: si el Id sigue, se actualiza (colisiones nuevas, o la estrella se mueve si el centroide cambia > 3 px) sin destruirlo; si cambia de tipo, el centroide salta > 200 px o el área sale del rango 0.4–2.5×, se destruye y se crea otro; si el Id desaparece, se elimina. Así una estrella cogida sigue cogida aunque el dibujo tiemble.
+
+### Victoria
+Al coger todas las estrellas que hay (mínimo una) sale «¡Has ganado!» con «Jugar de nuevo» (restaura las estrellas). HUD: `Estrellas cogidas/total`. Entrar en el juego (desde Ajustes, etc.) empieza partida nueva (`LevelManager.Clear`).
+
+### Pendiente
+- Escrito a ciegas: compilar en Godot (Build) y pegar errores. Abrir el proyecto una vez para que Godot genere los `.uid` de `Star.cs` y `LevelManager.cs`.
+- Verde sin función; vidas (de momento morir = reaparecer); el dibujo de la estrella se puede cambiar en `star.tscn`.
+
+### Estrella como dibujo (opción `StarsAsDrawing`, por defecto activada)
+Casilla en Ajustes: «Estrella = el propio dibujo amarillo (se borra al cogerla)». Con ella, la figura amarilla no se sustituye por el gráfico de `star.tscn` (se oculta; queda solo una zona de recogida invisible de radio √(área/π), entre 14 y 70 px). Al coger la estrella, `LevelManager.CollectedStarIds()` → `CameraService.SetErasedIds()`: la imagen mostrada rellena (inpainting Telea en una ventana pequeña) la zona de esa figura con el tono del papel de alrededor. Solo se borra la imagen mostrada: el detector sigue viendo la figura, así que la estrella conserva su Id y su estado «cogida». «Jugar de nuevo» o salir a Ajustes vuelve a mostrar el dibujo. Limitación: si la figura amarilla desaparece de la cámara más de 3 fotogramas (p. ej. la mano la tapa) se pierde su Id y la estrella se da por eliminada.
