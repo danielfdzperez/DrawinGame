@@ -9,31 +9,29 @@ public class MainForm : Form
     private const int MinSize = 20;
     private const double GrabRadiusPx = 15; // radio (en píxeles de pantalla) para agarrar una esquina
 
+    // ---- Barra superior
     private readonly ComboBox _cameraCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     private readonly Button _refreshButton = new() { Text = "Buscar cámaras", AutoSize = true };
     private readonly Button _toggleButton = new() { Text = "Iniciar", AutoSize = true, Enabled = false };
     private readonly Button _areaButton = new() { Text = "Seleccionar área", AutoSize = true };
     private readonly Button _clearAreaButton = new() { Text = "Borrar área", AutoSize = true };
     private readonly CheckBox _detectCheck = new() { Text = "Detectar dibujo", AutoSize = true, Checked = true };
-    private readonly Label _thresholdLabel = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-    private readonly TrackBar _thresholdBar = new() { Minimum = 0, Maximum = 255, Value = 100, TickStyle = TickStyle.None, Width = 140 };
-    private readonly Label _contrastLabel = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-    private readonly TrackBar _contrastBar = new() { Minimum = 0, Maximum = 100, Value = 40, TickStyle = TickStyle.None, Width = 140 };
-    private readonly Label _simplifyLabel = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-    private readonly TrackBar _simplifyBar = new() { Minimum = 0, Maximum = 20, Value = 3, TickStyle = TickStyle.None, Width = 140 };
-    private readonly Label _stabilityLabel = new() { AutoSize = true, Padding = new Padding(0, 6, 0, 0) };
-    private readonly TrackBar _stabilityBar = new() { Minimum = 0, Maximum = 15, Value = 4, TickStyle = TickStyle.None, Width = 140 };
     private readonly Label _statusLabel = new() { AutoSize = true, Text = "Buscando cámaras...", Padding = new Padding(0, 6, 0, 0) };
-    private readonly PictureBox _picture = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
 
-    // Leídos desde el hilo de captura
+    // ---- Las dos vistas
+    private readonly PictureBox _picFilter = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    private readonly PictureBox _picMask = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    private readonly PictureBox _picUser = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+
+    // ---- Ajustes (se leen desde el hilo de captura)
     private volatile bool _detectEnabled = true;
-    private volatile int _threshold = 100;
-    private volatile int _contrast = 40;
-    private volatile int _simplify = 3;
+    private volatile FilterSettings _filters = new(TemporalPct: 0, SpatialLevel: 10, WhiteBalance: true,
+                                                   IlluminationPct: 0, ClaheLevel: 4, ColorBoostPct: 100);
+    private volatile DetectionSettings _detection = new(InkDifference: 19, ColorDifference: 7,
+                                                        MinSize: MinSize, Epsilon: 2, AutoSensitivity: true, AutoColor: true, InferShapes: true);
     private volatile int _stability = 4;
 
-    // Área seleccionada por el usuario (esquinas en coordenadas de la imagen de la cámara)
+    // ---- Área seleccionada por el usuario (esquinas en coordenadas de la imagen de la cámara)
     private readonly object _areaLock = new();
     private readonly List<Point2f> _areaPoints = new();
     private volatile bool _editArea;
@@ -48,16 +46,11 @@ public class MainForm : Form
     public MainForm()
     {
         Text = "DrawinGame - Prototipo de cámara";
-        ClientSize = new System.Drawing.Size(1000, 640);
-        MinimumSize = new System.Drawing.Size(500, 400);
+        ClientSize = new System.Drawing.Size(1500, 760);
+        MinimumSize = new System.Drawing.Size(900, 500);
 
-        var topBar = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            Padding = new Padding(8),
-            WrapContents = true
-        };
+        // Barra superior
+        var topBar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(8), WrapContents = true };
         topBar.Controls.Add(new Label { Text = "Cámara:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
         topBar.Controls.Add(_cameraCombo);
         topBar.Controls.Add(_refreshButton);
@@ -65,51 +58,123 @@ public class MainForm : Form
         topBar.Controls.Add(_areaButton);
         topBar.Controls.Add(_clearAreaButton);
         topBar.Controls.Add(_detectCheck);
-        topBar.Controls.Add(_thresholdLabel);
-        topBar.Controls.Add(_thresholdBar);
-        topBar.Controls.Add(_contrastLabel);
-        topBar.Controls.Add(_contrastBar);
-        topBar.Controls.Add(_simplifyLabel);
-        topBar.Controls.Add(_simplifyBar);
-        topBar.Controls.Add(_stabilityLabel);
-        topBar.Controls.Add(_stabilityBar);
         topBar.Controls.Add(_statusLabel);
 
-        Controls.Add(_picture);
-        Controls.Add(topBar);
+        // Dos pantallas simultáneas, cada una con su título
+        var views = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2 };
+        for (int c = 0; c < 3; c++) views.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        views.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        views.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        views.Controls.Add(MakeTitle("Lo que ve el algoritmo (imagen filtrada)"), 0, 0);
+        views.Controls.Add(MakeTitle("Máscara (blanco = tinta que ve el detector)"), 1, 0);
+        views.Controls.Add(MakeTitle("Lo que ve el usuario (imagen normal + figuras)"), 2, 0);
+        views.Controls.Add(_picFilter, 0, 1);
+        views.Controls.Add(_picMask, 1, 1);
+        views.Controls.Add(_picUser, 2, 1);
 
-        UpdateThresholdLabel();
-        UpdateContrastLabel();
-        UpdateSimplifyLabel();
-        UpdateStabilityLabel();
+        // Panel lateral de ajustes
+        var side = new Panel { Dock = DockStyle.Right, Width = 300, AutoScroll = true, Padding = new Padding(8) };
+        var sideFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false
+        };
+        side.Controls.Add(sideFlow);
+        BuildSettings(sideFlow);
+
+        // El orden importa: lo añadido después se coloca primero en el acoplado
+        Controls.Add(views);
+        Controls.Add(side);
+        Controls.Add(topBar);
 
         _refreshButton.Click += async (_, _) => await RefreshCamerasAsync();
         _toggleButton.Click += (_, _) => { if (_cts == null) StartCapture(); else StopCapture(); };
         _areaButton.Click += (_, _) => OnAreaButton();
         _clearAreaButton.Click += (_, _) => ClearArea();
         _detectCheck.CheckedChanged += (_, _) => _detectEnabled = _detectCheck.Checked;
-        _thresholdBar.ValueChanged += (_, _) => { _threshold = _thresholdBar.Value; UpdateThresholdLabel(); };
-        _contrastBar.ValueChanged += (_, _) => { _contrast = _contrastBar.Value; UpdateContrastLabel(); };
-        _simplifyBar.ValueChanged += (_, _) => { _simplify = _simplifyBar.Value; UpdateSimplifyLabel(); };
-        _stabilityBar.ValueChanged += (_, _) => { _stability = _stabilityBar.Value; UpdateStabilityLabel(); };
 
-        _picture.MouseDown += OnPictureMouseDown;
-        _picture.MouseMove += OnPictureMouseMove;
-        _picture.MouseUp += (_, _) => _dragIndex = -1;
+        _picUser.MouseDown += OnPictureMouseDown;
+        _picUser.MouseMove += OnPictureMouseMove;
+        _picUser.MouseUp += (_, _) => _dragIndex = -1;
 
         Shown += async (_, _) => await RefreshCamerasAsync();
         FormClosing += (_, _) => StopCapture();
     }
 
-    private void UpdateStabilityLabel() => _stabilityLabel.Text = _stabilityBar.Value == 0
-        ? "Estabilidad: off"
-        : $"Estabilidad: {_stabilityBar.Value} px";
+    private static Label MakeTitle(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+        Padding = new Padding(4, 6, 0, 2)
+    };
 
-    private void UpdateSimplifyLabel() => _simplifyLabel.Text = $"Simplificación: {_simplifyBar.Value} px";
+    // ---------------------------------------------------------------- Panel de ajustes
 
-    private void UpdateContrastLabel() => _contrastLabel.Text = $"Contraste fino: {_contrastBar.Value}";
+    private void BuildSettings(FlowLayoutPanel panel)
+    {
+        AddHeading(panel, "FILTROS (imagen que ve el algoritmo)");
 
-    private void UpdateThresholdLabel() => _thresholdLabel.Text = $"Umbral negro: {_thresholdBar.Value}";
+        AddSlider(panel, "Ruido temporal %", 0, 90, _filters.TemporalPct,
+            v => _filters = _filters with { TemporalPct = v });
+        AddSlider(panel, "Ruido espacial (bilateral)", 0, 10, _filters.SpatialLevel,
+            v => _filters = _filters with { SpatialLevel = v });
+
+        var wb = new CheckBox { Text = "Balance de blancos", AutoSize = true, Checked = _filters.WhiteBalance };
+        wb.CheckedChanged += (_, _) => _filters = _filters with { WhiteBalance = wb.Checked };
+        panel.Controls.Add(wb);
+
+        AddSlider(panel, "Corregir sombras / luz %", 0, 100, _filters.IlluminationPct,
+            v => _filters = _filters with { IlluminationPct = v });
+        AddSlider(panel, "Contraste local (CLAHE)", 0, 10, _filters.ClaheLevel,
+            v => _filters = _filters with { ClaheLevel = v });
+        AddSlider(panel, "Realce de color %", 0, 100, _filters.ColorBoostPct,
+            v => _filters = _filters with { ColorBoostPct = v });
+
+        AddHeading(panel, "DETECCIÓN");
+
+        var auto = new CheckBox { Text = "Sensibilidad automática", AutoSize = true, Checked = _detection.AutoSensitivity };
+        auto.CheckedChanged += (_, _) => _detection = _detection with { AutoSensitivity = auto.Checked };
+        panel.Controls.Add(auto);
+        AddSlider(panel, "Sensibilidad manual (dif. con el papel)", 4, 60, _detection.InkDifference,
+            v => _detection = _detection with { InkDifference = v });
+        var infer = new CheckBox { Text = "Inferir formas (rectángulo/convexa)", AutoSize = true, Checked = _detection.InferShapes };
+        infer.CheckedChanged += (_, _) => _detection = _detection with { InferShapes = infer.Checked };
+        panel.Controls.Add(infer);
+        var autoColor = new CheckBox { Text = "Color automático", AutoSize = true, Checked = _detection.AutoColor };
+        autoColor.CheckedChanged += (_, _) => _detection = _detection with { AutoColor = autoColor.Checked };
+        panel.Controls.Add(autoColor);
+        AddSlider(panel, "Color mínimo manual (dif. a,b)", 2, 40, _detection.ColorDifference,
+            v => _detection = _detection with { ColorDifference = v });
+        AddSlider(panel, "Simplificación (px)", 0, 20, (int)_detection.Epsilon,
+            v => _detection = _detection with { Epsilon = v });
+        AddSlider(panel, "Estabilidad (px)", 0, 15, _stability,
+            v => _stability = v);
+    }
+
+    private static void AddHeading(FlowLayoutPanel panel, string text) =>
+        panel.Controls.Add(new Label
+        {
+            Text = text,
+            AutoSize = true,
+            Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+            Padding = new Padding(0, 12, 0, 4)
+        });
+
+    private static void AddSlider(FlowLayoutPanel panel, string title, int min, int max, int value, Action<int> onChange)
+    {
+        var label = new Label { Text = $"{title}: {value}", AutoSize = true };
+        var bar = new TrackBar { Minimum = min, Maximum = max, Value = value, TickStyle = TickStyle.None, Width = 270 };
+        bar.ValueChanged += (_, _) =>
+        {
+            label.Text = $"{title}: {bar.Value}";
+            onChange(bar.Value);
+        };
+        panel.Controls.Add(label);
+        panel.Controls.Add(bar);
+    }
 
     // ---------------------------------------------------------------- Área (4 puntos)
 
@@ -154,7 +219,7 @@ public class MainForm : Form
         int iw = _frameW, ih = _frameH;
         if (iw <= 0 || ih <= 0) return false;
 
-        double cw = _picture.ClientSize.Width, ch = _picture.ClientSize.Height;
+        double cw = _picUser.ClientSize.Width, ch = _picUser.ClientSize.Height;
         scale = Math.Min(cw / iw, ch / ih);
         if (scale <= 0) return false;
         offX = (cw - iw * scale) / 2;
@@ -173,7 +238,6 @@ public class MainForm : Form
 
         lock (_areaLock)
         {
-            // ¿Se ha pulsado cerca de una esquina existente? -> arrastrarla
             int nearest = -1;
             double best = GrabRadiusPx / scale;
             for (int i = 0; i < _areaPoints.Count; i++)
@@ -189,7 +253,7 @@ public class MainForm : Form
             else if (_areaPoints.Count < 4)
             {
                 _areaPoints.Add(new Point2f((float)x, (float)y));
-                _dragIndex = _areaPoints.Count - 1; // también se puede ajustar sin soltar
+                _dragIndex = _areaPoints.Count - 1;
             }
         }
     }
@@ -305,8 +369,10 @@ public class MainForm : Form
         _editArea = false;
         _dragIndex = -1;
         _areaButton.Text = "Seleccionar área";
-        SetImage(null);
+        SetImages(null, null, null);
     }
+
+    // ---------------------------------------------------------------- Bucle de captura
 
     private void CaptureLoop(int index, CancellationToken token)
     {
@@ -320,6 +386,7 @@ public class MainForm : Form
             }
 
             using var frame = new Mat();
+            using var filter = new ImageFilter();
             var stabilizer = new ShapeStabilizer();
             string lastInfo = "";
             bool lastFlat = false;
@@ -334,55 +401,59 @@ public class MainForm : Form
                 _frameW = frame.Width;
                 _frameH = frame.Height;
 
-                // Copia de las esquinas elegidas por el usuario
                 Point2f[] points;
                 lock (_areaLock) points = _areaPoints.ToArray();
 
                 bool edit = _editArea;
                 Mat? flat = null;
+                Mat? mask = null;
                 string? banner = null;
 
-                if (edit)
-                {
-                    // Modo selección: imagen completa con las esquinas dibujadas, sin detección
-                    DrawAreaOverlay(frame, points);
-                    banner = points.Length < 4
-                        ? $"Haz clic en las 4 esquinas del area ({points.Length}/4)"
-                        : "Arrastra las esquinas para ajustar. Pulsa 'Aplicar area'";
-                }
-                else if (points.Length == 4)
-                {
-                    // Área aplicada: se endereza y se ignora todo lo de fuera
-                    flat = AreaWarp.Warp(frame, AreaWarp.Order(points));
-                }
+                if (!edit && points.Length == 4)
+                    flat = AreaWarp.Warp(frame, AreaWarp.Order(points)); // área aplicada: se endereza y se ignora el resto
 
                 try
                 {
-                    Mat work = flat ?? frame;
+                    Mat work = flat ?? frame;   // imagen normal (la que verá el usuario)
                     bool areaApplied = flat != null;
-                    bool detect = _detectEnabled && !edit;
 
-                    // Al cambiar entre imagen completa y área aplanada, las coordenadas cambian
+                    // Al cambiar entre imagen completa y área aplanada, cambian las coordenadas
                     if (areaApplied != lastFlat)
                     {
                         stabilizer.Reset();
+                        filter.Reset();
                         lastFlat = areaApplied;
                     }
 
+                    // 1) Imagen filtrada: es la que se le pasa al detector
+                    using var filtered = filter.Apply(work, _filters);
+
+                    // 2) Detección y estabilización (sobre la imagen filtrada)
                     string info;
-                    if (detect)
+                    if (edit)
                     {
-                        // Detectar formas y estabilizarlas
-                        var detected = DrawingDetector.Detect(work, _threshold, _contrast, MinSize, _simplify);
+                        stabilizer.Reset();
+                        DrawAreaOverlay(work, points);
+                        banner = points.Length < 4
+                            ? $"Haz clic en las 4 esquinas del area ({points.Length}/4)"
+                            : "Arrastra las esquinas para ajustar. Pulsa 'Aplicar area'";
+                        info = banner;
+                    }
+                    else if (_detectEnabled)
+                    {
+                        var detected = DrawingDetector.Detect(filtered, _detection, out mask, out double usedDiff, out double usedColor);
                         var shapes = stabilizer.Update(detected, _stability);
+
+                        // 3) Imagen normal + figuras con su color
                         DrawingDetector.Paint(work, shapes);
-                        info = $"{_cameraName}: {shapes.Count} forma(s), {shapes.Sum(s => s.VertexCount)} vértices"
-                               + (areaApplied ? " [área]" : "");
+                        info = $"{_cameraName}: {Describe(shapes)}" + (areaApplied ? " [área]" : "")
+                               + (_detection.AutoSensitivity ? $" · sens. auto {usedDiff:0}" : "")
+                               + (_detection.AutoColor ? $" · color auto {usedColor:0.0}" : "");
                     }
                     else
                     {
                         stabilizer.Reset();
-                        info = banner ?? $"Leyendo {_cameraName}...";
+                        info = $"Leyendo {_cameraName}...";
                     }
 
                     if (banner != null) DrawBanner(work, banner);
@@ -393,10 +464,13 @@ public class MainForm : Form
                         BeginInvokeSafe(() => _statusLabel.Text = info);
                     }
 
-                    SetImage(BitmapConverter.ToBitmap(work));
+                    // Sin detección (edición del área / desactivada) la máscara se muestra en negro
+                    mask ??= new Mat(filtered.Size(), MatType.CV_8UC1, Scalar.All(0));
+                    SetImages(BitmapConverter.ToBitmap(filtered), BitmapConverter.ToBitmap(mask), BitmapConverter.ToBitmap(work));
                 }
                 finally
                 {
+                    mask?.Dispose();
                     flat?.Dispose();
                 }
             }
@@ -407,25 +481,43 @@ public class MainForm : Form
         }
     }
 
-    private void SetImage(Bitmap? bmp)
+    private static string Describe(List<DetectedShape> shapes)
+    {
+        if (shapes.Count == 0) return "0 formas";
+        string byColor = string.Join(", ", shapes.GroupBy(s => s.Ink)
+            .Select(g => $"{g.Count()} {DrawingDetector.Name(g.Key)}"));
+        return $"{shapes.Count} forma(s) ({byColor}), {shapes.Sum(s => s.VertexCount)} vértices";
+    }
+
+    private void SetImages(Bitmap? filtered, Bitmap? mask, Bitmap? user)
     {
         if (IsDisposed || !IsHandleCreated)
         {
-            bmp?.Dispose();
+            filtered?.Dispose();
+            mask?.Dispose();
+            user?.Dispose();
             return;
         }
         try
         {
             BeginInvoke(() =>
             {
-                var old = _picture.Image;
-                _picture.Image = bmp;
-                old?.Dispose();
+                var oldFilter = _picFilter.Image;
+                var oldMask = _picMask.Image;
+                var oldUser = _picUser.Image;
+                _picFilter.Image = filtered;
+                _picMask.Image = mask;
+                _picUser.Image = user;
+                oldFilter?.Dispose();
+                oldMask?.Dispose();
+                oldUser?.Dispose();
             });
         }
         catch (InvalidOperationException)
         {
-            bmp?.Dispose();
+            filtered?.Dispose();
+            mask?.Dispose();
+            user?.Dispose();
         }
     }
 

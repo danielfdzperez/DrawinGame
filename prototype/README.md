@@ -1,6 +1,6 @@
 # Prototipo de cámara (C#)
 
-Prototipo: elige una cámara, lee de ella, muestra la imagen y detecta dibujos en negro sobre fondo blanco, convirtiéndolos en polígonos (vértices) que se dibujan en verde encima.
+Prototipo: elige una cámara, lee de ella, muestra la imagen y detecta dibujos de **negro y de colores** sobre fondo claro, convirtiéndolos en polígonos (vértices) que se dibujan encima con el color detectado. Muestra **tres pantallas a la vez**: izquierda = imagen filtrada, centro = máscara en blanco y negro (la tinta que detecta el algoritmo), derecha = imagen normal con las figuras coloreadas (lo que ve el usuario).
 
 ## Requisitos
 
@@ -29,12 +29,24 @@ La primera vez descarga los paquetes NuGet (OpenCvSharp4), así que necesita int
    3. Pulsa **Aplicar área**. La ventana pasa a mostrar solo esa zona, enderezada (corrección de perspectiva, proporción A4), y la detección trabaja sobre ella.
    - Para reajustar, pulsa otra vez **Seleccionar área**. **Borrar área** vuelve a la imagen completa.
    - Si mueves la cámara o el folio, hay que volver a marcar las esquinas.
-5. Con **Detectar dibujo** activado, los trazos negros se pintan en verde. Apunta la cámara a un folio blanco con un dibujo en rotulador negro.
-6. Ajustes:
-   - **Umbral negro**: oscuridad absoluta. Para trazos gruesos o rellenos. Mantenlo bajo para no detectar grises.
+5. Con **Detectar dibujo** activado, cada figura se pinta con su color; solo hay 5 (negro, rojo, amarillo, verde, azul) y se asigna el que más se parezca (naranja → amarillo, cian → verde o azul, morado/rosa → azul o rojo). Apunta la cámara a un folio blanco con dibujos en rotuladores.
+6. Las tres pantallas: izquierda = imagen tras los filtros (la que recibe el detector); centro = máscara (blanco = tinta; de ahí salen las figuras, si algo falta aquí no se detectará); derecha = imagen normal + figuras. El área se marca sobre la pantalla derecha.
+7. Panel lateral, **Filtros** (afectan a la imagen del algoritmo):
+   - **Ruido temporal %**: promedia fotogramas (los píxeles que se mueven mucho se actualizan al instante).
+   - **Ruido espacial**: filtro bilateral (quita ruido conservando bordes).
+   - **Balance de blancos**: compensa el tinte de la luz (el papel pasa a ser blanco).
+   - **Corregir sombras / luz %**: iguala la iluminación en el canal L de Lab.
+   - **Contraste local (CLAHE)**: realza contraste por zonas.
+   - **Realce de color %**: sube la saturación.
+8. Ajustes de **Detección**:
+   - **Sensibilidad automática** (activada por defecto): estima el umbral del ruido del papel en cada fotograma (se ve en la barra de estado). Desmárcala para usar el deslizador manual.
+   - **Sensibilidad manual (dif. con el papel)**: cuánto tiene que diferenciarse un trazo del papel de alrededor para contar como tinta (negro, gris y colores pálidos por igual). Si faltan trazos flojos, bájala; si aparece ruido o manchas del papel, súbela.
+   - **Color automático** (activado por defecto): decide si una figura es negra o de color midiendo cuánto difiere su color (a,b) del papel; el umbral se estima del ruido de color del papel.
+   - **Color mínimo manual**: umbral a mano (típico 6–10). Si una tinta azul oscura sale negra, bájalo; si un negro sale con color, súbelo.
+   - **Inferir formas** (activada por defecto): las manchas sólidas se convierten en su figura probable (rectángulo girado de 4 vértices o polígono convexo) y se ignoran los huecos pequeños; las letras/trazos se dejan tal cual. Desmárcala para ver el contorno crudo.
    - **Simplificación**: tolerancia en píxeles al convertir el contorno en polígono (Douglas-Peucker). Más alto = menos vértices y formas más angulosas; 0 = todos los vértices.
    - **Estabilidad**: elimina el temblor por ruido de cámara. Si los vértices de una forma cambian menos que estos píxeles, la forma se mantiene exactamente igual. Si la forma se mueve en conjunto (la mitad o más de sus vértices), se actualiza al instante; si solo cambia algún vértice suelto, se acepta únicamente si dura unos fotogramas. Más alto = más estable; "off" = sin estabilizar.
-   - **Contraste fino**: para trazos finos. Detecta lo que es más oscuro que su entorno inmediato y estrecho (hasta ~15 px), aunque en la cámara se vea gris. Si no detecta un trazo fino, bájalo; si detecta ruido, súbelo. En 0 se desactiva. A la derecha se indica cuántas formas y vértices detecta.
+
 
 ## Notas
 
@@ -49,4 +61,5 @@ La primera vez descarga los paquetes NuGet (OpenCvSharp4), así que necesita int
 - `MainForm.cs`: ventana, selección de cámara, selección del área con el ratón y bucle de captura en un hilo aparte.
 - `AreaWarp.cs`: ordena las 4 esquinas elegidas y endereza el área (corrección de perspectiva).
 - `ShapeStabilizer.cs`: estabilización entre fotogramas (seguimiento de formas con histéresis).
-- `DrawingDetector.cs`: detección (gris → umbral + contraste → contornos → descarte de ruido → polígonos simplificados con huecos) y dibujado (relleno verde, contorno y vértices en amarillo).
+- `ImageFilter.cs`: cadena de filtros (temporal, bilateral, balance de blancos, iluminación, CLAHE, realce de color).
+- `DrawingDetector.cs`: detección por clases de color (negro + bandas de matiz) sobre la imagen filtrada → polígonos simplificados con huecos y color medio; dibujado en el color de cada figura.

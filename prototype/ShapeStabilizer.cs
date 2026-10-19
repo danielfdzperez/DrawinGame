@@ -59,6 +59,7 @@ public class ShapeStabilizer
             var tb = Cv2.BoundingRect(_tracks[t].Stable.Outline);
             for (int s = 0; s < detected.Count; s++)
             {
+                if (_tracks[t].Stable.Ink != detected[s].Ink) continue; // solo se empareja el mismo color
                 if (!Overlaps(tb, detBoxes[s], MatchDistance)) continue;
                 double d = Distance(_tracks[t].Stable, detected[s]);
                 if (d <= MatchDistance) pairs.Add((d, t, s));
@@ -80,6 +81,7 @@ public class ShapeStabilizer
             for (int s = 0; s < detected.Count; s++)
             {
                 if (detUsed[s]) continue;
+                if (_tracks[t].Stable.Ink != detected[s].Ink) continue; // solo se empareja el mismo color
                 var (dc, da) = CentroidArea(detected[s]);
                 double dist = Math.Sqrt((tc.X - dc.X) * (tc.X - dc.X) + (tc.Y - dc.Y) * (tc.Y - dc.Y));
                 double ratio = ta > 0 ? da / ta : 0;

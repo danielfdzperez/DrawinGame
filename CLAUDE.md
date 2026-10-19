@@ -25,6 +25,9 @@ Cada archivo amplía un tema concreto. Léelo solo cuando la tarea lo requiera.
 | Entorno, dependencias y limitaciones del entorno de Claude | `AIDocs/entorno.md` |
 | Prototipo C#: estructura, uso, qué se probó y qué se descartó | `AIDocs/prototipo.md` |
 | Pipeline de visión: área, detección, polígonos, parámetros | `AIDocs/vision.md` |
+| Filtros de imagen (ruido, iluminación, color) y fuentes | `AIDocs/filtros.md` |
+| Auto-ajuste de parámetros y evaluación de redes neuronales (YOLO) | `AIDocs/auto-y-redes.md` |
+| **Estado actual y traspaso entre conversaciones (leer primero)** | `AIDocs/estado-actual.md` |
 | Estabilización de formas entre fotogramas | `AIDocs/estabilizacion.md` |
 | Godot: guía para principiante y plan de integración | `AIDocs/godot.md` |
 | Decisiones tomadas y alternativas descartadas | `AIDocs/decisiones.md` |
