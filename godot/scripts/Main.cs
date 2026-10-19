@@ -493,10 +493,23 @@ public partial class Main : Node2D
 
 	// ------------------------------------------------------------ Entrada
 
+	private void ToggleFullscreen()
+	{
+		bool full = DisplayServer.WindowGetMode() == DisplayServer.WindowMode.Fullscreen;
+		DisplayServer.WindowSetMode(full ? DisplayServer.WindowMode.Maximized : DisplayServer.WindowMode.Fullscreen);
+	}
+
 	public override void _UnhandledInput(InputEvent @event)
 	{
 		if (@event is InputEventKey key && key.Pressed && !key.Echo)
 		{
+			// F11 (o Alt+Enter): pantalla completa <-> ventana (en cualquier pantalla de la aplicación)
+			if (key.Keycode == Key.F11 || (key.AltPressed && key.Keycode == Key.Enter))
+			{
+				ToggleFullscreen();
+				GetViewport().SetInputAsHandled();
+				return;
+			}
 			if (_state == AppState.Tuning && key.Keycode == Key.H)
 			{
 				SetTuningPanel(!_tuningPanelOpen);   // ocultar/mostrar los ajustes para ver toda la imagen

@@ -172,3 +172,10 @@ Antes `LevelManager` lo hacía todo (traducir color→tipo, crear objetos, conta
 
 ### Bug del reinicio (estrella recién cogida ya cogida)
 Síntoma: tras coger la última estrella y «Jugar de nuevo», esa estrella nacía cogida. **Causa probable (hipótesis, sin verificar en ejecución)**: al ganar se desactiva al jugador, que queda en el motor de física encima de la última estrella; al reiniciar, la estrella reactivaba su `Monitoring` antes de que el motor supiera que el jugador ya estaba en el punto de salida, y lo detectaba «dentro» al instante. Arreglo en dos capas: `Player.TeleportTo` comunica la posición nueva al motor al momento (`PhysicsServer2D.BodySetState`), y `Star.ResetStar` muestra la estrella pero reactiva la zona de recogida **dos fotogramas de física después** (con un token para descartar rearmes obsoletos). Orden en `Main.RestartGame`: recolocar jugador → activarlo → `_mode.Restart()`.
+
+## 15. Tamaño de ventana y pantalla completa (2026-10-19)
+- `project.godot` → `[display]`: `window/size/mode=2` (arranca **maximizada**), `window/size/resizable=true`. Escalado existente: `window/stretch/mode="canvas_items"`, `aspect="expand"` (base 1152×648; si la ventana tiene otra proporción, el área visible se amplía en vez de dejar barras).
+- **F11** o **Alt+Enter** alternan pantalla completa ↔ ventana maximizada (`Main.ToggleFullscreen`, atendido en `_UnhandledInput` antes que el resto de teclas, válido en todas las pantallas).
+- Al ejecutar desde el editor el juego puede salir incrustado y el modo de ventana no se aplica; en el `.exe` exportado sí.
+- Pendiente menor: el suelo de prueba (`FLoor` en `main.tscn`) tiene posición fija (572, 647), pensada para 16:9; con otras proporciones queda a media altura. Si molesta, colocarlo según `GetViewportRect().Size`.
+- Regla para el futuro: calcular siempre el layout con `GetViewportRect().Size`, nunca con 1152×648 fijos.

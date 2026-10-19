@@ -4,6 +4,8 @@
 
 > **ACTUALIZACIÓN 2026-10-19 (cámara del móvil)** — escrito a ciegas, sin compilar: app Android en `MobileApp/Android` (Kotlin, CameraX, servicio en primer plano) + `godot/vision/TcpFrameTransport.cs` (+ `ICameraSource`, `RemoteFrameReceiver`), pantallas `SourceSelect`/`RemoteWait`, QR con QRCoder. Ver `AIDocs/movil.md`. Pendiente: compilar Godot (hay paquete NuGet nuevo) y la app (Android Studio), y probar con el móvil.
 
+> **ACTUALIZACIÓN 2026-10-19 (ventana)** — escrito a ciegas, sin probar: arranca maximizada y redimensionable; F11 / Alt+Enter = pantalla completa (`godot.md` §15). Suelo de prueba con posición fija (pendiente menor).
+
 > **ACTUALIZACIÓN 2026-10-19 (refactor de responsabilidades + bug del reinicio)** — escrito a ciegas, pendiente de compilar (Build en Godot) y probar. Ver `godot.md` §14:
 > 1. Color→tipo ahora es un recurso `ColorRuleSet` (`godot/rules/platformer.tres`, `sin_color.tres`), editable en el Inspector y asignable en `Main.Rules`. `IShapeClassifier` es el único sitio que interpreta colores.
 > 2. `LevelManager` solo sincroniza objetos (eventos `ObjectCreated`/`LevelChanged`); las reglas de partida están en `IGameMode`/`StarCollectMode` (`scripts/modes/`).
