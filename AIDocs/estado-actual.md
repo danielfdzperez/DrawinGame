@@ -1,8 +1,17 @@
 # Estado actual y traspaso (2026-10-19)
 
+> **ACTUALIZACIÓN 2026-10-19 (sombras y panel)** — escrito a ciegas, sin compilar: (1) `DrawingDetector` v5 (`vision.md` §v5): detección apoyada en **bordes nítidos** + papel que sigue a las sombras → una sombra suave ya no se detecta como tinta ni falsea el umbral; `MinSize` 20→150, nuevo ajuste «Grosor mínimo» (`MinThickness`, 7), figuras pegadas al borde del área descartadas. Copiado también a `prototype/` (solo cambia el namespace). (2) Panel de Ajustes de Godot de ancho fijo con scroll y botón/tecla H para ocultarlo (`godot.md` §13). Pendiente: compilar y probar con la cámara; si sale ruido de arañazos, subir «Grosor mínimo»; si se pierde algún trazo fino, bajarlo.
+
+> **ACTUALIZACIÓN 2026-10-19 (cámara del móvil)** — escrito a ciegas, sin compilar: app Android en `MobileApp/Android` (Kotlin, CameraX, servicio en primer plano) + `godot/vision/TcpFrameTransport.cs` (+ `ICameraSource`, `RemoteFrameReceiver`), pantallas `SourceSelect`/`RemoteWait`, QR con QRCoder. Ver `AIDocs/movil.md`. Pendiente: compilar Godot (hay paquete NuGet nuevo) y la app (Android Studio), y probar con el móvil.
+
+> **ACTUALIZACIÓN 2026-10-19 (refactor de responsabilidades + bug del reinicio)** — escrito a ciegas, pendiente de compilar (Build en Godot) y probar. Ver `godot.md` §14:
+> 1. Color→tipo ahora es un recurso `ColorRuleSet` (`godot/rules/platformer.tres`, `sin_color.tres`), editable en el Inspector y asignable en `Main.Rules`. `IShapeClassifier` es el único sitio que interpreta colores.
+> 2. `LevelManager` solo sincroniza objetos (eventos `ObjectCreated`/`LevelChanged`); las reglas de partida están en `IGameMode`/`StarCollectMode` (`scripts/modes/`).
+> 3. Bug del reinicio: `Player.TeleportTo` + `Star.ResetStar` con rearme diferido 2 fotogramas de física (causa = hipótesis).
+
 > **ACTUALIZACIÓN 2026-10-19 (tarde)** — todo escrito a ciegas, pendiente de compilar y probar:
 > 1. Prototipo: `DrawingDetector` v4 (`vision.md` §v4): máscara → color por píxel (`ClassifyInk`) → figuras por región de color; `SplitByColor` eliminado; `Paint` usa colores fijos por familia; `DetectedShape` tiene `Id`, `Centroid`, `Area`; `ShapeStabilizer` asigna Ids estables.
-> 2. Godot (`godot.md` §11): `godot/vision` ya usa el detector nuevo; `LevelManager` (tabla color→tipo en `config.json`, un objeto por Id que se actualiza o recrea), `Star` + `scenes/star.tscn`, `Player.Died`; reglas: negro=plataforma, rojo=daño, amarillo=estrella, azul=inicio del jugador, verde=ninguna; victoria al coger todas las estrellas.
+> 2. Godot (`godot.md` §11): `godot/vision` ya usa el detector nuevo; `LevelManager` (un objeto por Id que se actualiza o recrea; el color→tipo ya NO está en `config.json`, ver ACTUALIZACIÓN de refactor), `Star` + `scenes/star.tscn`, `Player.Died`; reglas: negro=plataforma, rojo=daño, amarillo=estrella, azul=inicio del jugador, verde=ninguna; victoria al coger todas las estrellas.
 > 3. Lo de abajo sobre Godot («NO actualizado») y sobre `SplitByColor`/clasificación por figura queda obsoleto.
 
 

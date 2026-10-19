@@ -10,13 +10,14 @@ namespace DrawingGame.Vision;
 /// </summary>
 public sealed class CameraService : IDisposable
 {
-    private const int MinSize = 20;
+    private const int MinSize = 150;   // tamaño mínimo de una figura (px de la imagen enderezada de 900 de ancho): ignora polvo y motas
 
     // Parámetros (se pueden cambiar en caliente desde el hilo principal)
     public volatile int Simplify = 2;
     public volatile int Stability = 4;
     public volatile int Sensitivity = 0;         // sensibilidad manual (0 = automática)
     public volatile int ColorMin = 0;            // diferencia de color mínima manual (0 = automática)
+    public volatile int MinThickness = 7;        // grosor mínimo de un trazo (px de la imagen enderezada): lo más fino se ignora (arañazos, polvo)
     public volatile bool ShowDetection = true;   // dibujar (o no) las formas detectadas sobre la imagen
 
     public string? Error { get; private set; }
@@ -46,12 +47,16 @@ public sealed class CameraService : IDisposable
 
     // ------------------------------------------------------------ API (hilo principal)
 
-    public void Start(int cameraIndex)
+    /// <summary>
+    /// Arranca con una fuente de imágenes (webcam, móvil...). El servicio no la cierra: lo hace quien la creó, tras llamar a Stop().
+    /// Si ya está en marcha, no hace nada.
+    /// </summary>
+    public void Start(ICameraSource source)
     {
         if (_running && _thread?.IsAlive == true) return;
         Error = null;
         _running = true;
-        _thread = new Thread(() => Loop(cameraIndex)) { IsBackground = true, Name = "CameraService" };
+        _thread = new Thread(() => Loop(source)) { IsBackground = true, Name = "CameraService" };
         _thread.Start();
     }
 
@@ -129,16 +134,10 @@ public sealed class CameraService : IDisposable
 
     // ------------------------------------------------------------ Hilo de captura
 
-    private void Loop(int cameraIndex)
+    private void Loop(ICameraSource source)
     {
         try
         {
-            using var cap = new VideoCapture(cameraIndex, VideoCaptureAPIs.DSHOW);
-            if (!cap.IsOpened())
-            {
-                Error = $"No se pudo abrir la cámara {cameraIndex}.";
-                return;
-            }
 
             using var frame = new Mat();
             using var filter = new ImageFilter();
@@ -150,11 +149,14 @@ public sealed class CameraService : IDisposable
 
             while (_running)
             {
-                if (!cap.Read(frame) || frame.Empty())
+                // Espera la siguiente imagen de la fuente (sin ella, no hay nada que procesar)
+                bool got = source.TryGetFrame(frame, 200);
+                if (source.Error != null)
                 {
-                    Thread.Sleep(10);
-                    continue;
+                    Error = source.Error;
+                    return;
                 }
+                if (!got || frame.Empty()) continue;
                 _frameW = frame.Width;
                 _frameH = frame.Height;
 
@@ -205,7 +207,8 @@ public sealed class CameraService : IDisposable
                         var settings = new DetectionSettings(
                             InkDifference: sens > 0 ? sens : 19, ColorDifference: colorMin > 0 ? colorMin : 7,
                             MinSize: MinSize, Epsilon: Simplify,
-                            AutoSensitivity: sens == 0, AutoColor: colorMin == 0, InferShapes: true);
+                            AutoSensitivity: sens == 0, AutoColor: colorMin == 0, InferShapes: true,
+                            MinThickness: MinThickness);
                         var detected = DrawingDetector.Detect(filtered, settings, out Mat mask, out _, out _);
                         mask.Dispose();
                         var shapes = stabilizer.Update(detected, Math.Max(1, Stability));   // con 0 no habría Ids estables

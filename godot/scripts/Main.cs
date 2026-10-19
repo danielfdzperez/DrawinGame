@@ -4,7 +4,9 @@ using Godot;
 
 public enum AppState
 {
-	CameraSelect,   // 1. elegir cámara
+	SourceSelect,   // 0. elegir el origen de la imagen: cámara del PC o del móvil
+	CameraSelect,   // 1. elegir cámara del PC
+	RemoteWait,     // 1. (móvil) mostrar el QR y esperar a que el móvil se conecte
 	AreaSelect,     // 2. marcar las 4 esquinas
 	Tuning,         // 3. ajustar umbrales viendo lo detectado
 	Game            // 4. jugar
@@ -19,13 +21,19 @@ public class AppConfig
 	public int Stability { get; set; } = 4;
 	public int Sensitivity { get; set; } = 0;   // 0 = automática
 	public int ColorMin { get; set; } = 0;      // 0 = automático
+	public int MinThickness { get; set; } = 7;  // grosor mínimo de un trazo (px); lo más fino se ignora. 1 = sin límite
 	public bool ShowDetection { get; set; } = true;
+
+	/// <summary>Origen de la imagen: "Pc" (webcam) o "Phone" (app del móvil).</summary>
+	public string Source { get; set; } = "Pc";
+	public int RemotePort { get; set; } = TcpFrameTransport.DefaultPort;
+	public int WebPort { get; set; } = WebFrameTransport.DefaultPort;
+	public string RemoteToken { get; set; } = "";
+	/// <summary>Giro extra de la imagen del móvil, en cuartos de vuelta horarios (0-3).</summary>
+	public int RemoteRotation { get; set; } = 0;
 
 	/// <summary>true = la estrella es el propio dibujo amarillo y se borra de la imagen al cogerla; false = se pone una estrella dibujada.</summary>
 	public bool StarsAsDrawing { get; set; } = true;
-
-	/// <summary>Qué hace cada color: nombre del color (Black, Red, Yellow, Green, Blue) → tipo (Platform, Hazard, Star, Start, None).</summary>
-	public Dictionary<string, string> ColorRules { get; set; } = LevelRules.Defaults();
 }
 
 /// <summary>
@@ -35,15 +43,27 @@ public class AppConfig
 /// </summary>
 public partial class Main : Node2D
 {
+	/// <summary>
+	/// Qué significa cada color (o si el color no importa). Se elige en el Inspector de Godot arrastrando un .tres de res://rules/.
+	/// Si se deja vacío se usa res://rules/platformer.tres, y si tampoco existe, las reglas por defecto del código.
+	/// </summary>
+	[Export] public ColorRuleSet? Rules { get; set; }
+
 	private const string ConfigFile = "user://config.json";
 	private const float GrabRadius = 15f;           // radio (px de pantalla) para agarrar una esquina
-	private const float TuningPanelWidth = 340f;    // ancho del panel de ajustes
+	private const float TuningPanelWidth = 340f;    // ancho FIJO del panel de ajustes (la imagen se coloca a su izquierda)
+	private const float TuningCollapsedWidth = 48f; // ancho de la barra que queda cuando el panel está oculto
+	private const float TuningHintWidth = TuningPanelWidth - 56f;   // ancho del texto de ayuda (panel - márgenes - scroll)
 	private const float AreaTopBar = 48f;           // zona reservada arriba / abajo en la pantalla de área
 	private const float AreaBottomBar = 68f;
 
 	private readonly CameraService _camera = new();
+	private RemoteFrameReceiver? _remote;                       // imágenes que llegan del móvil (solo si el origen es el móvil)
+	private readonly List<IRemoteTransport> _transports = new(); // formas de conectar el móvil (app por TCP, web...)
+	private WebcamSource? _webcam;                              // solo si el origen es la webcam del PC
+	private bool _remoteSeenConnected;
 	private AppConfig _config = new();
-	private AppState _state = AppState.CameraSelect;
+	private AppState _state = AppState.SourceSelect;
 	private bool _menuOpen;
 
 	// Elementos de la escena
@@ -51,6 +71,7 @@ public partial class Main : Node2D
 	private Node2D? _floor;
 	private Vector2 _spawn;
 	private readonly LevelManager _level = new() { Name = "Level" };
+	private IGameMode _mode = null!;      // reglas de la partida (cómo se gana, qué muestra el HUD)
 	private bool _won;
 	private bool _placePlayer;
 	private readonly TextureRect _preview = new();
@@ -78,8 +99,9 @@ public partial class Main : Node2D
 			_player.Died += RespawnPlayer;
 		}
 
-		_level.StarsChanged += OnStarsChanged;
-		_level.AllStarsCollected += OnAllStars;
+		_mode = new StarCollectMode(_level);   // para otro tipo de juego: otra implementación de IGameMode
+		_mode.Changed += OnModeChanged;
+		_mode.Won += OnWon;
 		AddChild(_level);
 
 		// Imagen de la cámara por detrás del juego
@@ -93,18 +115,38 @@ public partial class Main : Node2D
 		BuildUiRoot();
 		LoadConfig();
 		ApplyParams();
-		GoTo(AppState.CameraSelect);
+		GoTo(AppState.SourceSelect);
 	}
 
-	public override void _ExitTree() => _camera.Dispose();
+	public override void _ExitTree()
+	{
+		_camera.Dispose();
+		StopRemote();
+		StopWebcam();
+	}
 
 	public override void _Process(double delta)
 	{
-		if (_camera.Error != _lastError)
+		string? message = _camera.Error ?? _transports.Select(t => t.Error).FirstOrDefault(e => e != null);
+		if (message == null && _remote != null && !_remote.Connected
+			&& _state is AppState.AreaSelect or AppState.Tuning or AppState.Game)
+			message = "Móvil desconectado. Esperando a que vuelva a conectarse...";
+		if (message != _lastError)
 		{
-			_lastError = _camera.Error;
+			_lastError = message;
 			if (_lastError != null) GD.PrintErr(_lastError);
 			ShowError(_lastError);
+		}
+
+		if (_state == AppState.RemoteWait && _remote != null)
+		{
+			if (!_remote.Connected) _remoteSeenConnected = false;
+			else if (!_remoteSeenConnected)
+			{
+				GoTo(AppState.AreaSelect);      // el móvil acaba de conectarse: a marcar las esquinas
+				return;
+			}
+			UpdateRemoteInfo();
 		}
 
 		if (_camera.TryGetPreview(out var data, out int w, out int h))
@@ -145,26 +187,39 @@ public partial class Main : Node2D
 		_menuOpen = false;
 		ClearScreen();
 
-		_preview.Visible = next != AppState.CameraSelect;
+		_preview.Visible = next is not (AppState.SourceSelect or AppState.CameraSelect or AppState.RemoteWait);
 		_preview.Modulate = next == AppState.Game ? new Color(1, 1, 1, 0.6f) : Colors.White;
 		SetPlayerActive(next == AppState.Game);
 
 		switch (next)
 		{
+			case AppState.SourceSelect:
+				StopCamera();
+				StopRemote();
+				BuildSourceScreen();
+				break;
+
 			case AppState.CameraSelect:
-				_camera.Stop();
+				StopCamera();
+				StopRemote();
 				StartScan();
 				BuildCameraScreen(null);
 				break;
 
+			case AppState.RemoteWait:
+				StopCamera();
+				EnsureRemote();
+				BuildRemoteScreen();
+				break;
+
 			case AppState.AreaSelect:
-				_camera.Start(_config.CameraIndex);
+				StartCamera();
 				_camera.SetCalibration(true, PointsToCv());
 				BuildAreaScreen();
 				break;
 
 			case AppState.Tuning:
-				_camera.Start(_config.CameraIndex);
+				StartCamera();
 				_camera.SetArea(PointsToCv());
 				_camera.SetCalibration(false, Array.Empty<OpenCvSharp.Point2f>());
 				_camera.ShowDetection = true;      // aquí siempre se ve lo detectado
@@ -172,7 +227,7 @@ public partial class Main : Node2D
 				break;
 
 			case AppState.Game:
-				_camera.Start(_config.CameraIndex);
+				StartCamera();
 				_camera.SetArea(PointsToCv());
 				_camera.SetCalibration(false, Array.Empty<OpenCvSharp.Point2f>());
 				_camera.ShowDetection = _config.ShowDetection;
@@ -207,7 +262,7 @@ public partial class Main : Node2D
 	private void ChooseCamera(int index)
 	{
 		_config.CameraIndex = index;
-		_camera.Stop();
+		StopCamera();
 		GoTo(AppState.AreaSelect);
 	}
 
@@ -217,7 +272,8 @@ public partial class Main : Node2D
 		_camera.Stability = _config.Stability;
 		_camera.Sensitivity = _config.Sensitivity;
 		_camera.ColorMin = _config.ColorMin;
-		_level.SetRules(LevelRules.Parse(_config.ColorRules));
+		_camera.MinThickness = _config.MinThickness;
+		_level.SetClassifier(ResolveRules());
 		_level.StarsAsDrawing = _config.StarsAsDrawing;
 	}
 
@@ -226,6 +282,84 @@ public partial class Main : Node2D
 		_config.ShowDetection = on;
 		if (_state == AppState.Game) _camera.ShowDetection = on;
 		UpdateHud();
+	}
+
+	// ------------------------------------------------------------ Origen de la imagen (PC o móvil)
+
+	private void ChooseSource(string source)
+	{
+		if (_config.Source != source)
+		{
+			// Otra cámara = otra imagen: las esquinas guardadas ya no valen
+			_points.Clear();
+			_config.Area = null;
+			_config.Source = source;
+		}
+		GoTo(source == "Phone" ? AppState.RemoteWait : AppState.CameraSelect);
+	}
+
+	private void EnsureRemote()
+	{
+		if (_remote != null) return;
+		if (string.IsNullOrEmpty(_config.RemoteToken))
+			_config.RemoteToken = Guid.NewGuid().ToString("N")[..8];
+
+		_remote = new RemoteFrameReceiver { UserRotation = _config.RemoteRotation };
+
+		// Formas de conectar el móvil: para añadir otra (web...), crear el transporte y añadirlo aquí
+		var tcp = new TcpFrameTransport(_remote, _config.RemoteToken, _config.RemotePort);
+		tcp.Start();
+		if (tcp.Port > 0) _config.RemotePort = tcp.Port;   // si el puerto estaba ocupado, se recuerda el nuevo
+		_transports.Add(tcp);
+
+		var web = new WebFrameTransport(_remote, _config.RemoteToken, _config.WebPort, ProjectSettings.GlobalizePath("user://remote-cert.pfx"));
+		web.Start();
+		if (web.Port > 0) _config.WebPort = web.Port;
+		_transports.Add(web);
+	}
+
+	private void StopRemote()
+	{
+		foreach (var transport in _transports) transport.Dispose();
+		_transports.Clear();
+		_remote?.Dispose();
+		_remote = null;
+	}
+
+	private void StopWebcam()
+	{
+		_webcam?.Dispose();
+		_webcam = null;
+	}
+
+	/// <summary>Para el hilo de la cámara y libera la webcam (el móvil sigue conectado).</summary>
+	private void StopCamera()
+	{
+		_camera.Stop();
+		StopWebcam();
+	}
+
+	private void StartCamera()
+	{
+		if (_remote != null)
+		{
+			_camera.Start(_remote);
+		}
+		else
+		{
+			_webcam ??= new WebcamSource(_config.CameraIndex);
+			_camera.Start(_webcam);
+		}
+	}
+
+	/// <summary>Vuelve al paso de elegir/conectar la cámara del origen actual.</summary>
+	private void BackToSource() => GoTo(_remote != null ? AppState.RemoteWait : AppState.CameraSelect);
+
+	private void RotateRemote()
+	{
+		_config.RemoteRotation = (_config.RemoteRotation + 1) & 3;
+		if (_remote != null) _remote.UserRotation = _config.RemoteRotation;
+		ClearPoints();   // la imagen cambia de forma: hay que marcar las esquinas otra vez
 	}
 
 	// ------------------------------------------------------------ Búsqueda de cámaras
@@ -252,7 +386,7 @@ public partial class Main : Node2D
 
 	private void ShowPreview(byte[] data, int w, int h)
 	{
-		if (_state == AppState.CameraSelect) return;
+		if (_state is AppState.CameraSelect or AppState.SourceSelect or AppState.RemoteWait) return;
 
 		var image = Image.CreateFromData(w, h, false, Image.Format.Rgb8, data);
 		if (_texture != null && _texture.GetWidth() == w && _texture.GetHeight() == h)
@@ -281,7 +415,8 @@ public partial class Main : Node2D
 			case AppState.AreaSelect:
 				return new Rect2(0, AreaTopBar, view.X, view.Y - AreaTopBar - AreaBottomBar);
 			case AppState.Tuning:
-				return new Rect2(0, 0, view.X - TuningPanelWidth, view.Y);
+				// Toda la imagen cabe a la izquierda del panel (o de su barra si está oculto): nada la tapa
+				return new Rect2(0, 0, view.X - (_tuningPanelOpen ? TuningPanelWidth : TuningCollapsedWidth), view.Y);
 			case AppState.Game:
 				var size = new Vector2(imgW, imgH);   // tamaño real: coincide con el nivel
 				return new Rect2(((view - size) / 2).Round(), size);
@@ -314,19 +449,33 @@ public partial class Main : Node2D
 
 	private void RespawnPlayer()
 	{
-		if (_player == null) return;
-		_player.GlobalPosition = _level.HasSpawn ? _level.SpawnPoint : _spawn;
-		_player.Velocity = Vector2.Zero;
+		_player?.TeleportTo(_level.HasSpawn ? _level.SpawnPoint : _spawn);
 	}
 
-	private void OnStarsChanged()
+	/// <summary>Quién decide qué es cada color: la propiedad Rules (Inspector), si no res://rules/platformer.tres, si no el código.</summary>
+	private ColorRuleSet ResolveRules()
+	{
+		if (Rules != null) return Rules;
+		try
+		{
+			var loaded = GD.Load<ColorRuleSet>("res://rules/platformer.tres");
+			if (loaded != null) return loaded;
+		}
+		catch (Exception e)
+		{
+			GD.PushWarning($"No se pudo cargar res://rules/platformer.tres: {e.Message}");
+		}
+		return ColorRuleSet.CreateDefault();
+	}
+
+	private void OnModeChanged()
 	{
 		UpdateHud();
-		// Con la estrella como dibujo, las cogidas se borran de la imagen
-		_camera.SetErasedIds(_config.StarsAsDrawing ? _level.CollectedStarIds() : Array.Empty<int>());
+		// Lo que el modo diga (p. ej. estrellas ya cogidas) se borra de la imagen mostrada
+		_camera.SetErasedIds(_mode.HiddenShapeIds());
 	}
 
-	private void OnAllStars()
+	private void OnWon()
 	{
 		_won = true;
 		SetPlayerActive(false);
@@ -337,9 +486,9 @@ public partial class Main : Node2D
 	{
 		_won = false;
 		ShowWin(false);
-		_level.ResetStars();
+		RespawnPlayer();            // primero el jugador (y la física lo sabe) ...
 		SetPlayerActive(true);
-		RespawnPlayer();
+		_mode.Restart();            // ... y luego las estrellas, que se reactivan con retraso
 	}
 
 	// ------------------------------------------------------------ Entrada
@@ -348,6 +497,11 @@ public partial class Main : Node2D
 	{
 		if (@event is InputEventKey key && key.Pressed && !key.Echo)
 		{
+			if (_state == AppState.Tuning && key.Keycode == Key.H)
+			{
+				SetTuningPanel(!_tuningPanelOpen);   // ocultar/mostrar los ajustes para ver toda la imagen
+				return;
+			}
 			if (_state == AppState.Game)
 			{
 				if (key.Keycode == Key.Escape) { ToggleMenu(); return; }

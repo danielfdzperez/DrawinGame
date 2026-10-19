@@ -10,6 +10,17 @@ public partial class Player : CharacterBody2D
 
 	private bool _wWasDown;
 
+	/// <summary>
+	/// Coloca al jugador en un sitio y lo para. También se lo comunica YA al motor de física: Godot aplica los cambios de
+	/// posición con retraso, y sin esto las zonas (estrellas) seguirían «viendo» al jugador en el sitio anterior.
+	/// </summary>
+	public void TeleportTo(Vector2 position)
+	{
+		GlobalPosition = position;
+		Velocity = Vector2.Zero;
+		PhysicsServer2D.BodySetState(GetRid(), PhysicsServer2D.BodyState.Transform, GlobalTransform);
+	}
+
 	public override void _PhysicsProcess(double delta)
 	{
 		var v = Velocity;

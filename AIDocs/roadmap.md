@@ -17,6 +17,9 @@ Hecho: proyecto creado, personaje, integración de cámara/visión y flujo de pa
 4. Integrar la cámara y la visión en Godot (hilo de captura + cola de polígonos).
 5. Reconstruir el nivel al cambiar el dibujo sin perder la posición/estado del jugador.
 
+## Cámara del móvil (escrita, sin probar)
+App Android (`MobileApp/Android`) + servidor y pantallas en Godot. Pendiente: compilar ambos, probar con el móvil real (pantalla apagada, QR con cámara normal) y valorar iOS más adelante. Ver `AIDocs/movil.md`.
+
 ## Después
 - Rojo = peligros (HSV, dos rangos de H).
 - Calibración persistente (umbrales, esquinas del área) y pantalla de ajuste.

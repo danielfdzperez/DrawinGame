@@ -40,8 +40,10 @@ public record DetectedShape(OpenCvSharp.Point[] Outline, List<OpenCvSharp.Point[
 /// <param name="AutoSensitivity">Si es true, InkDifference se ignora y se estima del ruido del papel en cada fotograma.</param>
 /// <param name="AutoColor">Si es true, ColorDifference se ignora y se estima del ruido de color del papel.</param>
 /// <param name="InferShapes">Si es true, las manchas sólidas se sustituyen por la figura probable (rectángulo girado o polígono convexo) y se ignoran huecos pequeños.</param>
+/// <param name="MinThickness">Grosor mínimo (px de la imagen) de un trazo para contar como dibujo: lo más fino (arañazos, polvo) se ignora. 1 = sin límite.</param>
 public record DetectionSettings(int InkDifference, int ColorDifference, int MinSize, double Epsilon,
-                                bool AutoSensitivity = false, bool AutoColor = false, bool InferShapes = false);
+                                bool AutoSensitivity = false, bool AutoColor = false, bool InferShapes = false,
+                                int MinThickness = 7);
 
 /// <summary>
 /// Detecta trazos sobre papel claro en la imagen YA FILTRADA (ver ImageFilter) y los convierte
@@ -77,6 +79,20 @@ public static class DrawingDetector
         _ => ink.ToString()
     };
 
+    // --- Detección por bordes nítidos (inmune a sombras) ---
+    // Una sombra es un cambio de luz grande y SUAVE; la tinta tiene bordes nítidos. Por eso solo cuenta como tinta lo que está
+    // apoyado en bordes fuertes del gradiente del color, y el papel (para medir diferencias) se estima con todo lo demás,
+    // de modo que sigue a la sombra en vez de confundirla con un dibujo.
+    private const double GradientSigma = 1.2;     // suavizado previo al gradiente (px)
+    private const double EdgeLowMin = 2.5;        // umbral bajo mínimo del gradiente (L en 0-100 por píxel)
+    private const double EdgeHighMin = 6.0;       // umbral alto mínimo (semilla del borde)
+    private const double EdgeLowK = 4.0;          // umbral bajo = mediana + K·σ del gradiente de toda la imagen
+    private const double EdgeHighK = 9.0;
+    private const double PaperSigma = 4.0;        // suavizado del papel, en píxeles de la imagen reducida a 1/4
+    private const double ContrastRatio = 2.0;     // el 90 % de la figura debe diferenciarse del papel al menos RATIO × umbral de tinta
+    private const int BorderMargin = 8;           // una figura pegada al borde del área...
+    private const int BorderDepth = 18;           // ...y que entra menos de esto en la imagen es el marco/borde del folio, no un dibujo
+
     private const double HighRatio = 1.8;
     // Un hueco es real (papel visto a través de la figura) solo si su diferencia media con el papel es menor que
     // esta fracción del umbral de tinta. Las vetas claras dentro de un trazo de rotulador siguen siendo "casi tinta".
@@ -97,9 +113,21 @@ public static class DrawingDetector
         using var lab = new Mat();
         lab8.ConvertTo(lab, MatType.CV_32FC3);
 
-        // Tinta = lo que se diferencia del "papel" local (negro, lápiz gris y colores pálidos por igual,
-        // y aguanta degradados de iluminación porque el papel se estima por zonas)
-        using var paper = EstimatePaper(lab8);
+        // 1) Bordes nítidos: lo único que puede ser tinta. Una sombra suave no tiene bordes así.
+        //    La sensibilidad manual también ajusta lo exigente que es el borde (19 = valor de referencia).
+        double edgeScale = s.AutoSensitivity ? 1.0 : Math.Clamp(s.InkDifference / 19.0, 0.5, 2.0);
+        using var edges = SharpEdges(lab, edgeScale);
+        using var inked = FillEdges(edges);          // zonas encerradas por bordes (con relleno por paridad: un marco cerrado deja su interior libre)
+        using var kExclude = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(9, 9));
+        using var excluded = new Mat();              // dónde NO mirar para estimar el papel
+        Cv2.Dilate(inked, excluded, kExclude);
+        using var kSupport = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
+        using var support = new Mat();               // dónde se permite que haya tinta
+        Cv2.Dilate(inked, support, kSupport);
+
+        // 2) Papel local = todo lo que no es tinta, suavizado. Sigue a las sombras, así que "tinta" = lo que se diferencia
+        //    del papel de SU alrededor (negro, lápiz gris y colores pálidos por igual).
+        using var paper = EstimatePaper(lab, excluded);
         using var diff = new Mat();
         Cv2.Subtract(lab, paper, diff);   // (dL, da, db) respecto al papel
         Magnitudes(diff, out Mat distance, out Mat abDistance);
@@ -108,19 +136,36 @@ public static class DrawingDetector
         Cv2.GaussianBlur(distance, distance, new OpenCvSharp.Size(0, 0), 1.0);
         Cv2.GaussianBlur(abDistance, abDistance, new OpenCvSharp.Size(0, 0), 1.0);
 
-        double low = s.AutoSensitivity ? EstimateNoiseThreshold(distance, 8, 40) : s.InkDifference;
+        // El ruido se mide solo en el papel (fuera de la tinta)
+        double low = s.AutoSensitivity ? EstimateNoiseThreshold(distance, 8, 40, excluded) : s.InkDifference;
         usedDifference = low;
-        double colorThreshold = s.AutoColor ? EstimateNoiseThreshold(abDistance, 6, 30) : s.ColorDifference;
+        double colorThreshold = s.AutoColor ? EstimateNoiseThreshold(abDistance, 6, 30, excluded) : s.ColorDifference;
         usedColor = colorThreshold;
         using var lowMask = Binarize(distance, low);
         using var highMask = Binarize(distance, low * HighRatio);
+        Cv2.BitwiseAnd(lowMask, support, lowMask);   // solo donde hay bordes nítidos
 
         // Cerrar tapa agujeros de 1 px dentro de un trazo
         using var k3 = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
         Cv2.MorphologyEx(lowMask, lowMask, MorphTypes.Close, k3);
 
+        // Grosor mínimo: lo más fino que MinThickness (arañazos, polvo) no es dibujo. Se quedan las partes con "cuerpo"
+        // y lo que las rodea (así una figura no se encoge); la semilla de cada figura debe estar en una parte gruesa.
+        if (s.MinThickness > 1)
+        {
+            int t = Math.Clamp(s.MinThickness, 2, 21);
+            using var kCore = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(t, t));
+            using var core = new Mat();
+            Cv2.MorphologyEx(lowMask, core, MorphTypes.Open, kCore);
+            using var kBack = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(t + 2, t + 2));
+            using var grown = new Mat();
+            Cv2.Dilate(core, grown, kBack);
+            Cv2.BitwiseAnd(lowMask, grown, lowMask);
+            Cv2.BitwiseAnd(highMask, core, highMask);
+        }
+
         // Imagen en blanco y negro: la tinta aceptada. Es la "imagen × máscara": de aquí salen todas las figuras.
-        BuildInkMask(lowMask, highMask, distance, low * HoleDistanceRatio, s, mask);
+        BuildInkMask(lowMask, highMask, distance, low, s, mask);
 
         // Cada píxel de tinta se clasifica en uno de los 5 colores y cada región de un color es una figura
         using var labels = ClassifyInk(filtered, mask, diff, colorThreshold);
@@ -142,23 +187,175 @@ public static class DrawingDetector
     /// y la MAD (desviación absoluta mediana, robusta a la tinta) da su ruido: umbral = mediana + 4.5·σ.
     /// (Con papel real: mediana 5, σ≈3 → ~18, igual que el valor que el usuario ajustó a mano.)
     /// </summary>
-    private static double EstimateNoiseThreshold(Mat distance, double min, double max)
+    private static double EstimateNoiseThreshold(Mat distance, double min, double max, Mat? excluded = null)
     {
-        using var d8 = new Mat();
-        distance.ConvertTo(d8, MatType.CV_8UC1, 4.0); // 4 niveles por unidad de distancia
-        d8.GetArray(out byte[] data);
-        if (data.Length == 0) return min;
+        NoiseLevel(distance, 4.0, excluded, out double median, out double sigma);   // 4 niveles por unidad de distancia
+        return Math.Clamp(median + 4.5 * sigma, min, max);
+    }
+
+    /// <summary>
+    /// Nivel y ruido (mediana y σ = 1.4826·MAD) de un mapa de valores, ignorando los píxeles de <paramref name="excluded"/> (tinta).
+    /// Cuantifica a 8 bits con <paramref name="quant"/> niveles por unidad. Si casi no queda papel, usa toda la imagen.
+    /// </summary>
+    private static void NoiseLevel(Mat values, double quant, Mat? excluded, out double median, out double sigma)
+    {
+        using var v8 = new Mat();
+        values.ConvertTo(v8, MatType.CV_8UC1, quant);
+        v8.GetArray(out byte[] data);
+
+        byte[] skip = Array.Empty<byte>();
+        if (excluded != null) excluded.GetArray(out skip);
+        bool useSkip = skip.Length == data.Length;
 
         var hist = new int[256];
-        foreach (byte v in data) hist[v]++;
-        int median = HistogramMedian(hist, data.Length);
+        int total = 0;
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (useSkip && skip[i] != 0) continue;
+            hist[data[i]]++;
+            total++;
+        }
+        if (total < 500)   // casi todo es tinta: no hay papel que medir
+        {
+            Array.Clear(hist, 0, hist.Length);
+            foreach (byte v in data) hist[v]++;
+            total = data.Length;
+        }
+        if (total == 0) { median = 0; sigma = 0; return; }
 
+        int med = HistogramMedian(hist, total);
         var dev = new int[256];
-        for (int v = 0; v < 256; v++) dev[Math.Abs(v - median)] += hist[v];
-        int mad = HistogramMedian(dev, data.Length);
+        for (int v = 0; v < 256; v++) dev[Math.Abs(v - med)] += hist[v];
+        int mad = HistogramMedian(dev, total);
 
-        double sigma = 1.4826 * mad / 4.0;
-        return Math.Clamp(median / 4.0 + 4.5 * sigma, min, max);
+        median = med / quant;
+        sigma = 1.4826 * mad / quant;
+    }
+
+    /// <summary>
+    /// Gradiente del color (L en 0-100, a y b tal cual): cuánto cambia el color por píxel. Los bordes de un trazo son abruptos
+    /// (varias unidades por píxel); una sombra o la luz desigual cambian despacio (menos de 1).
+    /// </summary>
+    private static Mat GradientMagnitude(Mat lab)
+    {
+        Cv2.Split(lab, out Mat[] c);
+        var sum = new Mat(lab.Size(), MatType.CV_32FC1, Scalar.All(0));
+        for (int i = 0; i < 3; i++)
+        {
+            if (i == 0) Cv2.Multiply(c[0], Scalar.All(100.0 / 255.0), c[0]);   // la L de OpenCV va de 0 a 255
+            Cv2.GaussianBlur(c[i], c[i], new OpenCvSharp.Size(0, 0), GradientSigma);
+            using var gx = new Mat();
+            using var gy = new Mat();
+            Cv2.Sobel(c[i], gx, MatType.CV_32F, 1, 0, 3, 1.0 / 8.0);
+            Cv2.Sobel(c[i], gy, MatType.CV_32F, 0, 1, 3, 1.0 / 8.0);
+            Cv2.Multiply(gx, gx, gx);
+            Cv2.Multiply(gy, gy, gy);
+            Cv2.Add(sum, gx, sum);
+            Cv2.Add(sum, gy, sum);
+            c[i].Dispose();
+        }
+        Cv2.Sqrt(sum, sum);
+        return sum;
+    }
+
+    /// <summary>
+    /// Bordes nítidos (0/255): píxeles con gradiente alto, por histéresis (un borde débil solo cuenta si toca uno fuerte).
+    /// Los umbrales salen del ruido del propio gradiente, con mínimos fijos.
+    /// </summary>
+    private static Mat SharpEdges(Mat lab, double scale)
+    {
+        using var grad = GradientMagnitude(lab);
+        NoiseLevel(grad, 6.0, null, out double median, out double sigma);
+        double low = Math.Max(EdgeLowMin, median + EdgeLowK * sigma) * scale;
+        double high = Math.Max(EdgeHighMin, median + EdgeHighK * sigma) * scale;
+
+        using var lowMask = Binarize(grad, low);
+        using var highMask = Binarize(grad, high);
+        using var labels = new Mat();
+        int n = Cv2.ConnectedComponents(lowMask, labels, PixelConnectivity.Connectivity8);
+        labels.GetArray(out int[] label);
+        highMask.GetArray(out byte[] seed);
+
+        var keep = new bool[n];
+        for (int i = 0; i < label.Length; i++)
+            if (seed[i] != 0) keep[label[i]] = true;
+        keep[0] = false;   // el fondo no es un borde
+
+        var data = new byte[label.Length];
+        for (int i = 0; i < data.Length; i++)
+            data[i] = keep[label[i]] ? (byte)255 : (byte)0;
+
+        var result = new Mat(grad.Rows, grad.Cols, MatType.CV_8UC1);
+        result.SetArray(data);
+        return result;
+    }
+
+    /// <summary>
+    /// Zonas de tinta a partir de los bordes (0/255): se engrosan un poco, se toma el contorno exterior de cada trazo/figura
+    /// y se rellenan TODOS a la vez (relleno por paridad: lo que queda dentro de dos contornos anidados, como el interior de un
+    /// marco cerrado, queda vacío) y se añaden los propios bordes.
+    /// </summary>
+    private static Mat FillEdges(Mat edges)
+    {
+        using var k5 = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
+        using var grown = new Mat();
+        Cv2.Dilate(edges, grown, k5);
+
+        var filled = new Mat(edges.Size(), MatType.CV_8UC1, Scalar.All(0));
+        Cv2.FindContours(grown, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy,
+            RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
+
+        var outer = new List<OpenCvSharp.Point[]>();
+        for (int i = 0; i < contours.Length; i++)
+            if (hierarchy[i].Parent == -1) outer.Add(contours[i]);
+        if (outer.Count > 0)
+            Cv2.FillPoly(filled, outer, Scalar.All(255));
+
+        Cv2.BitwiseOr(filled, grown, filled);
+        return filled;
+    }
+
+    /// <summary>true si la figura está pegada al borde de la imagen y apenas entra en ella (marco del folio, no dibujo).</summary>
+    private static bool HugsBorder(Rect box, int width, int height)
+    {
+        if (box.X <= BorderMargin && box.X + box.Width <= BorderDepth) return true;
+        if (box.Y <= BorderMargin && box.Y + box.Height <= BorderDepth) return true;
+        if (box.X + box.Width >= width - BorderMargin && width - box.X <= BorderDepth) return true;
+        if (box.Y + box.Height >= height - BorderMargin && height - box.Y <= BorderDepth) return true;
+        return false;
+    }
+
+    /// <summary>Diferencia con el papel que supera el 90 % de los píxeles de tinta de la figura (contorno exterior ∩ máscara de tinta).</summary>
+    private static double InkContrast(Mat distance, Mat inkMask, OpenCvSharp.Point[] contour)
+    {
+        var rect = Cv2.BoundingRect(contour).Intersect(new Rect(0, 0, distance.Width, distance.Height));
+        if (rect.Width <= 0 || rect.Height <= 0) return 0;
+
+        var shift = new OpenCvSharp.Point(-rect.X, -rect.Y);
+        using var inside = new Mat(rect.Size, MatType.CV_8UC1, Scalar.All(0));
+        Cv2.FillPoly(inside, new[] { contour.Select(p => p + shift).ToArray() }, Scalar.All(255));
+        using var inkRoi = new Mat(inkMask, rect);
+        Cv2.BitwiseAnd(inside, inkRoi, inside);
+
+        using var distRoi = new Mat(distance, rect);
+        using var d8 = new Mat();
+        distRoi.ConvertTo(d8, MatType.CV_8UC1, 2.0);   // 2 niveles por unidad (satura en 127)
+        d8.GetArray(out byte[] values);
+        inside.GetArray(out byte[] sel);
+
+        var hist = new int[256];
+        int count = 0;
+        for (int i = 0; i < values.Length; i++)
+            if (sel[i] != 0) { hist[values[i]]++; count++; }
+        if (count == 0) return 0;
+
+        int acc = 0, target = (int)Math.Ceiling(count * 0.9);
+        for (int v = 0; v < 256; v++)
+        {
+            acc += hist[v];
+            if (acc >= target) return v / 2.0;
+        }
+        return 127.5;
     }
 
     private static int HistogramMedian(int[] hist, int total)
@@ -207,45 +404,42 @@ public static class DrawingDetector
     }
 
     /// <summary>
-    /// Estima el color del papel en cada punto (CV_32FC3, tamaño completo): mediana grande a 1/4 de resolución
-    /// y, después, media ponderada que ignora los píxeles que ya se ven como tinta.
+    /// Estima el color del papel en cada punto (CV_32FC3, tamaño completo) a partir de la imagen Lab (<paramref name="lab"/>, CV_32FC3):
+    /// media gaussiana a 1/4 de resolución que usa solo los píxeles fuera de <paramref name="excluded"/> (la tinta, según los bordes nítidos).
+    /// Como el suavizado es corto (σ ≈ 16 px de la imagen), el papel sigue a las sombras y a la luz desigual, y la tinta
+    /// (que no entra en la media) se rellena con el papel de alrededor.
     /// </summary>
-    private static Mat EstimatePaper(Mat lab8)
+    private static Mat EstimatePaper(Mat lab, Mat excluded)
     {
-        using var small8 = new Mat();
-        Cv2.Resize(lab8, small8, new OpenCvSharp.Size(), 0.25, 0.25, InterpolationFlags.Area);
         using var small = new Mat();
-        small8.ConvertTo(small, MatType.CV_32FC3);
+        Cv2.Resize(lab, small, new OpenCvSharp.Size(), 0.25, 0.25, InterpolationFlags.Area);
+        using var excludedSmall = new Mat();
+        Cv2.Resize(excluded, excludedSmall, small.Size(), 0, 0, InterpolationFlags.Area);
 
-        Cv2.Split(small8, out Mat[] planes);
-        foreach (var p in planes) Cv2.MedianBlur(p, p, 41);
-        using var median8 = new Mat();
-        Cv2.Merge(planes, median8);
-        foreach (var p in planes) p.Dispose();
+        using var free8 = new Mat();                      // 255 donde (casi) no hay tinta
+        Cv2.Threshold(excludedSmall, free8, 19, 255, ThresholdTypes.BinaryInv);
+        using var weight = new Mat();
+        free8.ConvertTo(weight, MatType.CV_32F, 1.0 / 255.0);
+        var paper = NormalizedBlur(small, weight, PaperSigma);
 
-        var paper = new Mat();
-        median8.ConvertTo(paper, MatType.CV_32FC3);
+        // Segunda pasada: también se descarta lo que sigue lejos del papel estimado (tinta débil sin bordes claros)
+        using var dist = Distance(small, paper);
+        Cv2.GaussianBlur(dist, dist, new OpenCvSharp.Size(0, 0), 1.0);
+        using var far8 = Binarize(dist, 28);
+        using var near8 = new Mat();
+        Cv2.BitwiseNot(far8, near8);
+        using var free2 = new Mat();
+        Cv2.BitwiseAnd(free8, near8, free2);
+        using var k3 = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+        Cv2.Erode(free2, free2, k3);
+        using var weight2 = new Mat();
+        free2.ConvertTo(weight2, MatType.CV_32F, 1.0 / 255.0);
 
-        using var k5 = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(5, 5));
-        for (int iteration = 0; iteration < 2; iteration++)
-        {
-            using var dist = Distance(small, paper);
-            Cv2.GaussianBlur(dist, dist, new OpenCvSharp.Size(0, 0), 1.0);
-            using var isInk = Binarize(dist, 10);
-            Cv2.Dilate(isInk, isInk, k5);
-
-            using var notInk8 = new Mat();
-            Cv2.BitwiseNot(isInk, notInk8);
-            using var weight = new Mat();
-            notInk8.ConvertTo(weight, MatType.CV_32F, 1.0 / 255.0);
-
-            var next = NormalizedBlur(small, weight, 12.0);
-            paper.Dispose();
-            paper = next;
-        }
+        paper.Dispose();
+        paper = NormalizedBlur(small, weight2, PaperSigma);
 
         var full = new Mat();
-        Cv2.Resize(paper, full, lab8.Size(), 0, 0, InterpolationFlags.Linear);
+        Cv2.Resize(paper, full, lab.Size(), 0, 0, InterpolationFlags.Linear);
         paper.Dispose();
         return full;
     }
@@ -274,8 +468,9 @@ public static class DrawingDetector
     /// Imagen en blanco y negro de la tinta aceptada: cada componente conectada (con algún píxel del umbral alto y tamaño suficiente),
     /// rellena, menos sus huecos reales (papel visto a través de la figura).
     /// </summary>
-    private static void BuildInkMask(Mat lowMask, Mat highMask, Mat distance, double holeLimit, DetectionSettings s, Mat displayMask)
+    private static void BuildInkMask(Mat lowMask, Mat highMask, Mat distance, double inkThreshold, DetectionSettings s, Mat displayMask)
     {
+        double holeLimit = inkThreshold * HoleDistanceRatio;
         Cv2.FindContours(lowMask, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy,
             RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
 
@@ -287,6 +482,12 @@ public static class DrawingDetector
             double size = Math.Max(Cv2.ContourArea(contours[i]), Cv2.ArcLength(contours[i], true) / 2);
             if (size < s.MinSize) continue;
             if (!HasSeed(highMask, contours[i])) continue;
+
+            // Pegada al borde del área y casi sin entrar: es el marco del folio, no un dibujo
+            if (HugsBorder(Cv2.BoundingRect(contours[i]), lowMask.Width, lowMask.Height)) continue;
+
+            // Una mancha, un arañazo o un resto de sombra se diferencian poco del papel: el dibujo real, mucho
+            if (InkContrast(distance, lowMask, contours[i]) < ContrastRatio * inkThreshold) continue;
 
             Cv2.FillPoly(displayMask, new[] { contours[i] }, Scalar.All(255));
             for (int h = hierarchy[i].Child; h != -1; h = hierarchy[h].Next)

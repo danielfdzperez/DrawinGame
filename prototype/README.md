@@ -67,3 +67,6 @@ La primera vez descarga los paquetes NuGet (OpenCvSharp4), así que necesita int
 ## Cambios 2026-10-19
 - Detección de color por píxel (imagen × máscara) y fijado de la paleta de dibujo: cada familia se pinta con su color fijo.
 - `DetectedShape` ahora tiene `Id` (asignado por `ShapeStabilizer`), `Centroid` y `Area`.
+
+## Nota (2026-10-19): detector v5
+`DrawingDetector.cs` es copia del de `godot/vision/` (solo cambia el namespace): detección apoyada en bordes nítidos, papel que sigue a las sombras, `MinSize` 150 y grosor mínimo 7 px por defecto (`DetectionSettings.MinThickness`; este prototipo no tiene deslizador para él). Detalles en `AIDocs/vision.md` §v5.

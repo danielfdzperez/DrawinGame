@@ -97,3 +97,21 @@ Sustituye a `SplitByColor` y a la clasificación por figura (la tinta de una fig
 3. Filtro de moda (gaussiana σ=3 por clase) para limpiar ruido; después, partes finas (no caben en una apertura 25×25) con ≥25 % de su contorno tocando otro color se reasignan a ese color (sombra/borde oscuro de un lápiz o rotulador).
 4. Cada región conectada de un color = una figura (`AddClassShapes`); su color es la media real de sus píxeles. Validado en Python con las capturas (lápiz azul = 1 figura, rectángulo negro = otra, aro negro, amarillo tapado por el lápiz).
 Pendiente de comprobar en vivo: letras de tinta azul claro ("Pedro") pueden salir parcialmente azules; el lado oscuro de figuras de color a veces deja una franja negra pequeña.
+
+## v5 (2026-10-19): bordes nítidos y papel que sigue a las sombras
+**Problema**: una sombra suave sobre el folio (p. ej. en el borde derecho) se detectaba como tinta enorme, y además falseaba el umbral automático. Causa: `EstimatePaper` excluía de la estimación del papel todo lo que se alejaba del papel inicial, así que la sombra se excluía a sí misma y nunca se aprendía; el resto de «tinta» salía del umbral contaminado (se quedaba en el tope de 40).
+
+**Idea**: una sombra es un cambio de luz grande y suave; la tinta tiene bordes nítidos. En el mapa de gradiente del color (Lab, σ=1.2) la sombra casi no se ve y los trazos brillan.
+1. `SharpEdges`: gradiente de Lab (L en 0-100) → histéresis (bajo = max(2.5, mediana+4σ), alto = max(6, mediana+9σ), σ = 1.4826·MAD del propio gradiente). Con la Sensibilidad manual, los umbrales se escalan por `InkDifference/19` (0.5–2).
+2. `FillEdges`: bordes engrosados 5×5 → contorno exterior de cada trazo (`RETR_CCOMP`, solo nivel superior) → **un único `FillPoly`** (relleno por paridad: un marco cerrado grande deja su interior libre; un blob macizo se rellena) → se añaden los propios bordes. Da `inked` (zonas de tinta).
+3. Papel: `EstimatePaper(lab, excluded)` = media gaussiana normalizada (σ=4 a 1/4 de resolución ≈ 16 px) usando solo los píxeles fuera de `excluded` = dilatación 9×9 de `inked`; segunda pasada que descarta también lo que sigue a más de 28 de distancia. El papel **sigue a la sombra**.
+4. Distancia al papel + umbral automático medido **solo en el papel** (`NoiseLevel` con la máscara `excluded`), como antes (`mediana+4.5σ`, 8–40).
+5. Máscara: `distancia > umbral` **∩** `inked` dilatado 3×3 (la tinta debe estar apoyada en bordes nítidos) → cierre 3×3 → **grosor mínimo** (apertura con elipse de `MinThickness` px, se conserva lo que cae a ≤ (t+2)/2 px de lo que sobrevive; la semilla de histéresis debe estar en la parte gruesa).
+6. Por figura (`BuildInkMask`): tamaño ≥ `MinSize` (ahora **150**, antes 20), semilla fuerte, no pegada al borde del área (si el recuadro toca un borde a ≤ 8 px y entra menos de 18 px es el marco del folio), y contraste (percentil 90 de la distancia al papel dentro de la figura) ≥ 2 × umbral de tinta (`InkContrast`).
+7. Color, huecos, formas y estabilizador: sin cambios (`ClassifyInk`, `BuildShape`, `ShapeStabilizer`).
+
+**Nuevo ajuste**: `MinThickness` / «Grosor mínimo (px)» (1–15, por defecto 7, 1 = sin límite). Es en píxeles de la imagen enderezada (900 de ancho): un rotulador de 3 mm en un folio A4 son ~9 px, en una pizarra de 1 m ~3 px (bajarlo). Sirve para ignorar arañazos y polvo.
+
+**Validación (offline, Python+OpenCV replicando el pipeline sobre la foto de la pizarra con sombra a la derecha)**: antes, toda la sombra era una mancha (umbral 40); ahora desaparece y se detectan todas las figuras reales, incluidos dos trazos negros dentro de la sombra, que se clasifican como negros. Pruebas sintéticas añadiendo sombras (banda suave, elipse de «mano» con borde medio y con borde duro) dan los mismos resultados; un marco grueso cerrado casi al borde se detecta como contorno sin llenar su interior. **Pendiente de probar en C#** (no se puede compilar desde el entorno de Claude).
+
+**Límites conocidos**: un color muy pálido con bordes casi sin gradiente puede perderse (bajar la Sensibilidad manual, que también baja la exigencia del borde); un trazo más fino que `MinThickness` se ignora; un resto de arañazo con una mancha gruesa en el cruce puede quedar como figura pequeña.

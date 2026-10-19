@@ -8,8 +8,13 @@
 - **Estabilización a nivel de forma** con aceptación instantánea del movimiento global.
 - **Capturar y procesar en un hilo aparte**, entregando datos por estructura segura.
 
+- **Cámara del móvil con app Android nativa (Kotlin) + TCP propio** hacia Godot, con QR para emparejar (`AIDocs/movil.md`). Una sola app Android; iOS pospuesto (Mac + Xcode).
+- **Responsabilidades separadas: visión / clasificador de color (`ColorRuleSet`, recurso editable en el Inspector) / nivel (`LevelManager`) / modo de juego (`IGameMode`).** Para poder tener juegos donde el color no importa o significa otra cosa sin tocar el código del nivel.
+
 ## Descartadas
+- **Cámara del móvil como página web servida por Godot**: exige HTTPS con certificado autofirmado y aviso de seguridad en el móvil; el usuario no la quiso.
 - **Python** (OpenCV + pygame + pymunk + PyInstaller): se probó la idea, pero el destino es Godot, que va mejor con C#.
 - **Godot + proceso Python** comunicados por UDP/WebSocket: dos procesos, más complejo.
 - **Detección automática del folio por brillo** y **por diferencia con el fondo**: no funcionaron bien / no convencieron. Sustituidas por selección manual.
 - **Promedio de vértices** para estabilizar: inviable por el cambio de vértices entre fotogramas.
+- **Tabla color→tipo en `config.json`**: sustituida por `ColorRuleSet` (`.tres`), editable en el editor de Godot.

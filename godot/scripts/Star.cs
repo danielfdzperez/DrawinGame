@@ -10,6 +10,7 @@ public partial class Star : Area2D
 
 	private float _radius = 24f;
 	private bool _showGraphic = true;
+	private int _armToken;   // identifica el último rearme pedido (los anteriores se descartan)
 
 	/// <summary>Se lanza cuando el jugador la toca.</summary>
 	public event Action<Star>? Picked;
@@ -60,16 +61,32 @@ public partial class Star : Area2D
 
 	public void Collect()
 	{
+		_armToken++;   // cancela cualquier rearme pendiente
 		Collected = true;
 		Visible = false;
 		SetDeferred(Area2D.PropertyName.Monitoring, false);
 	}
 
-	public void ResetStar()
+	/// <summary>
+	/// Vuelve a dejarla sin coger. Se muestra ya, pero la zona de recogida se reactiva DOS fotogramas de física después:
+	/// así, si el jugador acaba de ser recolocado (reinicio), el motor de física ya tiene su posición nueva y la estrella
+	/// no se «recoge» sola con la posición vieja.
+	/// </summary>
+	public async void ResetStar()
 	{
+		if (!Collected) return;
+
 		Collected = false;
 		Visible = true;
-		SetDeferred(Area2D.PropertyName.Monitoring, true);
+		int token = ++_armToken;
+
+		if (!IsInsideTree()) return;
+		await ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame);
+		if (!IsInsideTree()) return;
+		await ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame);
+
+		if (token == _armToken && !Collected && IsInsideTree())
+			SetDeferred(Area2D.PropertyName.Monitoring, true);
 	}
 
 	private static Vector2[] MakeStar(float outer, float inner)

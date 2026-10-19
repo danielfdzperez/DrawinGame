@@ -1,44 +1,22 @@
 using DrawingGame.Vision;
 using Godot;
 
-/// <summary>Qué objeto del juego representa un color.</summary>
-public enum ObjectKind
+/// <summary>Un objeto del nivel creado a partir de una figura dibujada.</summary>
+public sealed class LevelObject
 {
-	None,       // se ignora
-	Platform,   // plataforma o pared: solo colisión
-	Hazard,     // daño: colisión que hace perder al tocarla
-	Star,       // estrella coleccionable (se coloca en el centroide)
-	Start       // punto donde empieza el jugador (centroide)
-}
-
-/// <summary>Tabla color → tipo de objeto. Se guarda en config.json como texto para poder editarla a mano.</summary>
-public static class LevelRules
-{
-	public static Dictionary<string, string> Defaults() => new()
-	{
-		["Black"] = "Platform",
-		["Red"] = "Hazard",
-		["Yellow"] = "Star",
-		["Blue"] = "Start",
-		["Green"] = "None"
-	};
-
-	public static Dictionary<InkColor, ObjectKind> Parse(Dictionary<string, string>? text)
-	{
-		var rules = new Dictionary<InkColor, ObjectKind>();
-		if (text == null) return rules;
-		foreach (var pair in text)
-			if (Enum.TryParse<InkColor>(pair.Key, true, out var ink) && Enum.TryParse<ObjectKind>(pair.Value, true, out var kind))
-				rules[ink] = kind;
-		return rules;
-	}
+	public int Id;                          // Id estable de la figura (lo da ShapeStabilizer)
+	public ObjectKind Kind;
+	public Node2D Node = null!;
+	public DetectedShape Shape = null!;
 }
 
 /// <summary>
-/// Mantiene los objetos del nivel sincronizados con las figuras detectadas.
-/// Cada figura tiene un Id estable (lo da ShapeStabilizer): si el Id sigue existiendo, el objeto de Godot se ACTUALIZA
-/// (no se destruye, así una estrella ya cogida sigue cogida); si cambia mucho de sitio o de tamaño, o su tipo, se
-/// destruye y se crea uno nuevo; si desaparece, se elimina.
+/// Mantiene los objetos de Godot sincronizados con las figuras detectadas. Solo se ocupa de ESO:
+///   · NO decide qué significa cada color: se lo pregunta al clasificador (IShapeClassifier, p. ej. ColorRuleSet).
+///   · NO decide cómo se gana ni qué se cuenta: eso es del modo de juego (IGameMode), que se engancha a los eventos de aquí.
+/// Cada figura tiene un Id estable: si el Id sigue existiendo, el objeto de Godot se ACTUALIZA (no se destruye, así una
+/// estrella ya cogida sigue cogida); si cambia mucho de sitio o de tamaño, o su tipo, se destruye y se crea uno nuevo;
+/// si desaparece, se elimina.
 /// </summary>
 public partial class LevelManager : Node2D
 {
@@ -47,39 +25,28 @@ public partial class LevelManager : Node2D
 	private const double RecreateAreaMax = 2.5;
 	private const float StarMoveThreshold = 3f;      // px: la estrella solo se mueve si el centroide cambia más que esto
 
-	private sealed class Entry
-	{
-		public ObjectKind Kind;
-		public Node2D Node = null!;
-		public DetectedShape Shape = null!;
-	}
-
-	private readonly Dictionary<int, Entry> _entries = new();
-	private Dictionary<InkColor, ObjectKind> _rules = LevelRules.Parse(LevelRules.Defaults());
+	private readonly Dictionary<int, LevelObject> _entries = new();
+	private IShapeClassifier _classifier = ColorRuleSet.CreateDefault();
 	private PackedScene? _starScene;
 	private Vector2 _spawnLocal;
-	private bool _winFired;
 
-	/// <summary>Cambió el número de estrellas o se cogió alguna.</summary>
-	public event Action? StarsChanged;
+	/// <summary>Se acaba de crear un objeto (para que el modo de juego se enganche a él: p. ej. a una estrella).</summary>
+	public event Action<LevelObject>? ObjectCreated;
 
-	/// <summary>Se han cogido todas las estrellas que hay (y hay al menos una).</summary>
-	public event Action? AllStarsCollected;
+	/// <summary>Cambió el conjunto de objetos (se creó o se eliminó alguno) o se vació el nivel. Se lanza una vez por sincronización.</summary>
+	public event Action? LevelChanged;
 
-	/// <summary>true = la estrella es el propio dibujo amarillo (sin gráfico); false = se pone el dibujo de scenes/star.tscn.</summary>
+	/// <summary>true = la estrella es el propio dibujo (sin gráfico); false = se pone el dibujo de scenes/star.tscn.</summary>
 	public bool StarsAsDrawing { get; set; }
 
 	public bool HasSpawn { get; private set; }
 	public Vector2 SpawnPoint => ToGlobal(_spawnLocal);
 
-	public int StarsTotal => _entries.Values.Count(e => e.Kind == ObjectKind.Star);
-	public int StarsCollected => _entries.Values.Count(e => e.Kind == ObjectKind.Star && ((Star)e.Node).Collected);
+	/// <summary>Objetos actuales del nivel.</summary>
+	public IReadOnlyCollection<LevelObject> Objects => _entries.Values;
 
-	public void SetRules(Dictionary<InkColor, ObjectKind> rules) => _rules = rules;
-
-	/// <summary>Ids de las estrellas ya cogidas (para borrar su dibujo de la imagen).</summary>
-	public int[] CollectedStarIds() =>
-		_entries.Where(p => p.Value.Kind == ObjectKind.Star && ((Star)p.Value.Node).Collected).Select(p => p.Key).ToArray();
+	/// <summary>Quién decide qué es cada figura. Los objetos ya creados se corrigen en la siguiente sincronización.</summary>
+	public void SetClassifier(IShapeClassifier classifier) => _classifier = classifier;
 
 	/// <summary>Quita todos los objetos (al empezar una partida nueva).</summary>
 	public void Clear()
@@ -88,17 +55,7 @@ public partial class LevelManager : Node2D
 			entry.Node.QueueFree();
 		_entries.Clear();
 		HasSpawn = false;
-		_winFired = false;
-		StarsChanged?.Invoke();
-	}
-
-	/// <summary>Vuelve a dejar todas las estrellas sin coger.</summary>
-	public void ResetStars()
-	{
-		foreach (var entry in _entries.Values)
-			if (entry.Node is Star star) star.ResetStar();
-		_winFired = false;
-		StarsChanged?.Invoke();
+		LevelChanged?.Invoke();
 	}
 
 	/// <summary>Sincroniza el nivel con las últimas figuras estables. Se llama desde el hilo principal.</summary>
@@ -107,12 +64,13 @@ public partial class LevelManager : Node2D
 		Position = ((viewSize - new Vector2(width, height)) / 2).Round();
 
 		var alive = new HashSet<int>();
-		bool starsChanged = false;
+		bool changed = false;
 		DetectedShape? bestStart = null;
 
 		foreach (var shape in shapes)
 		{
-			if (!_rules.TryGetValue(shape.Ink, out var kind) || kind == ObjectKind.None) continue;
+			var kind = _classifier.Classify(shape);
+			if (kind == ObjectKind.None) continue;
 
 			if (kind == ObjectKind.Start)
 			{
@@ -124,16 +82,17 @@ public partial class LevelManager : Node2D
 			_entries.TryGetValue(shape.Id, out var entry);
 			if (entry != null && (entry.Kind != kind || IsBigChange(entry.Shape, shape)))
 			{
-				if (entry.Kind == ObjectKind.Star) starsChanged = true;
 				RemoveEntry(shape.Id, entry);
 				entry = null;
+				changed = true;
 			}
 
 			if (entry == null)
 			{
 				entry = CreateEntry(kind, shape);
 				_entries[shape.Id] = entry;
-				if (kind == ObjectKind.Star) starsChanged = true;
+				changed = true;
+				ObjectCreated?.Invoke(entry);
 			}
 			else if (!ReferenceEquals(entry.Shape, shape))
 			{
@@ -147,24 +106,19 @@ public partial class LevelManager : Node2D
 		// Lo que ya no está dibujado desaparece
 		foreach (int id in _entries.Keys.Where(id => !alive.Contains(id)).ToList())
 		{
-			var entry = _entries[id];
-			if (entry.Kind == ObjectKind.Star) starsChanged = true;
-			RemoveEntry(id, entry);
+			RemoveEntry(id, _entries[id]);
+			changed = true;
 		}
 
 		HasSpawn = bestStart != null;
 		if (bestStart != null) _spawnLocal = ToVector(bestStart.Centroid);
 
-		if (starsChanged)
-		{
-			StarsChanged?.Invoke();
-			CheckWin();
-		}
+		if (changed) LevelChanged?.Invoke();
 	}
 
 	// ------------------------------------------------------------ Objetos
 
-	private Entry CreateEntry(ObjectKind kind, DetectedShape shape)
+	private LevelObject CreateEntry(ObjectKind kind, DetectedShape shape)
 	{
 		Node2D node;
 		if (kind == ObjectKind.Star)
@@ -173,7 +127,6 @@ public partial class LevelManager : Node2D
 			var star = _starScene?.Instantiate() as Star ?? new Star();
 			star.Position = ToVector(shape.Centroid);   // la forma del dibujo no importa: solo dónde está
 			star.Setup(StarRadius(shape), !StarsAsDrawing);
-			star.Picked += OnStarPicked;
 			node = star;
 		}
 		else
@@ -186,14 +139,14 @@ public partial class LevelManager : Node2D
 		}
 
 		AddChild(node);
-		return new Entry { Kind = kind, Node = node, Shape = shape };
+		return new LevelObject { Id = shape.Id, Kind = kind, Node = node, Shape = shape };
 	}
 
 	/// <summary>Radio de recogida: el de un círculo con el área del dibujo (si es el propio dibujo), o fijo si se pone una estrella.</summary>
 	private float StarRadius(DetectedShape shape) =>
 		StarsAsDrawing ? Mathf.Clamp((float)Math.Sqrt(Math.Max(shape.Area, 0) / Math.PI), 14f, 70f) : 24f;
 
-	private void UpdateEntry(Entry entry, DetectedShape shape)
+	private void UpdateEntry(LevelObject entry, DetectedShape shape)
 	{
 		if (entry.Node is Star star)
 		{
@@ -207,7 +160,7 @@ public partial class LevelManager : Node2D
 		}
 	}
 
-	private void RemoveEntry(int id, Entry entry)
+	private void RemoveEntry(int id, LevelObject entry)
 	{
 		_entries.Remove(id);
 		entry.Node.QueueFree();
@@ -220,23 +173,6 @@ public partial class LevelManager : Node2D
 		if (oldArea <= 0) return false;
 		double ratio = now.Area / oldArea;
 		return ratio < RecreateAreaMin || ratio > RecreateAreaMax;
-	}
-
-	private void OnStarPicked(Star star)
-	{
-		StarsChanged?.Invoke();
-		CheckWin();
-	}
-
-	private void CheckWin()
-	{
-		if (_winFired) return;
-		int total = StarsTotal;
-		if (total > 0 && StarsCollected == total)
-		{
-			_winFired = true;
-			AllStarsCollected?.Invoke();
-		}
 	}
 
 	// ------------------------------------------------------------ Colisiones

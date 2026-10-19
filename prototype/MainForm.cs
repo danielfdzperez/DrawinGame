@@ -6,7 +6,7 @@ namespace DrawinGamePrototype;
 public class MainForm : Form
 {
     private const int MaxCamerasToProbe = 10;
-    private const int MinSize = 20;
+    private const int MinSize = 150;
     private const double GrabRadiusPx = 15; // radio (en píxeles de pantalla) para agarrar una esquina
 
     // ---- Barra superior

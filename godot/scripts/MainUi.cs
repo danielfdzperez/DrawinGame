@@ -12,6 +12,11 @@ public partial class Main
 	private Label? _hud;
 	private Control? _menuRoot;
 	private Control? _winRoot;
+	private Label? _remoteInfo;
+	private Button? _remoteContinue;
+	private Control? _tuningPanel;       // panel de ajustes abierto
+	private Control? _tuningCollapsed;   // barra estrecha que lo sustituye cuando está oculto
+	private bool _tuningPanelOpen = true;
 
 	// ------------------------------------------------------------ Base
 
@@ -44,6 +49,10 @@ public partial class Main
 		_hud = null;
 		_menuRoot = null;
 		_winRoot = null;
+		_remoteInfo = null;
+		_remoteContinue = null;
+		_tuningPanel = null;
+		_tuningCollapsed = null;
 	}
 
 	private void SetScreen(Control screen)
@@ -88,6 +97,149 @@ public partial class Main
 	{
 		c.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
 		return c;
+	}
+
+	// ------------------------------------------------------------ 0. Elegir origen (PC o móvil)
+
+	private void BuildSourceScreen()
+	{
+		var center = (CenterContainer)FullRect(new CenterContainer { MouseFilter = Control.MouseFilterEnum.Ignore });
+		var box = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+		box.AddThemeConstantOverride("separation", 16);
+		center.AddChild(box);
+
+		box.AddChild(MakeLabel("DrawinGame", 40));
+		box.AddChild(MakeLabel("¿Qué cámara quieres usar?", 22));
+
+		var pc = MakeButton("Cámara del PC" + (_config.Source == "Pc" ? "  (la última usada)" : ""),
+							() => ChooseSource("Pc"), 380);
+		pc.CustomMinimumSize = new Vector2(380, 64);
+		var phone = MakeButton("Cámara del móvil (Android)" + (_config.Source == "Phone" ? "  (la última usada)" : ""),
+							   () => ChooseSource("Phone"), 380);
+		phone.CustomMinimumSize = new Vector2(380, 64);
+		box.AddChild(pc);
+		box.AddChild(phone);
+
+		SetScreen(center);
+	}
+
+	// ------------------------------------------------------------ 1. (móvil) QR y espera
+
+	private void BuildRemoteScreen()
+	{
+		var margin = (MarginContainer)FullRect(new MarginContainer { MouseFilter = Control.MouseFilterEnum.Ignore });
+		foreach (var side in new[] { "left", "right", "top", "bottom" })
+			margin.AddThemeConstantOverride("margin_" + side, 20);
+
+		var box = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+		box.AddThemeConstantOverride("separation", 10);
+		margin.AddChild(box);
+
+		box.AddChild(MakeLabel("Paso 1 de 3 · Conecta la cámara del móvil", 28));
+		box.AddChild(MakeLabel("El móvil debe estar en la misma red WiFi que este PC. Escanea el código de la forma de conexión que prefieras."));
+
+		var hosts = LocalNetwork.Addresses();
+		if (_transports.Count == 0)
+		{
+			box.AddChild(MakeLabel("No hay ninguna forma de conexión disponible."));
+		}
+		else if (hosts.Count == 0)
+		{
+			box.AddChild(MakeLabel("No se ha encontrado ninguna red. Conecta el PC al WiFi o al router y vuelve a entrar en esta pantalla."));
+		}
+		else
+		{
+			// Un QR por cada forma de conectar el móvil
+			var qrRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+			qrRow.AddThemeConstantOverride("separation", 40);
+			foreach (var transport in _transports)
+			{
+				var column = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+				column.AddThemeConstantOverride("separation", 6);
+				column.AddChild(MakeLabel(transport.Title, 20));
+				if (transport.Error != null || transport.Port == 0)
+				{
+					column.AddChild(MakeLabel(transport.Error ?? "No disponible."));
+				}
+				else
+				{
+					column.AddChild(new TextureRect
+					{
+						Texture = MakeQrTexture(transport.BuildUri(hosts)),
+						ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+						StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+						TextureFilter = CanvasItem.TextureFilterEnum.Nearest,
+						CustomMinimumSize = new Vector2(320, 320),
+						MouseFilter = Control.MouseFilterEnum.Ignore
+					});
+					column.AddChild(MakeLabel(transport.Hint));
+					column.AddChild(MakeLabel(transport.Describe(hosts)));
+				}
+				qrRow.AddChild(column);
+			}
+			box.AddChild(qrRow);
+		}
+
+		_remoteInfo = MakeLabel("", 18);
+		box.AddChild(_remoteInfo);
+		box.AddChild(MakeLabel("La primera vez, si Windows pregunta por el cortafuegos, permite el acceso en redes privadas."));
+		box.AddChild(MakeSpacer());
+
+		var row = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+		row.AddChild(MakeButton("‹ Inicio", () => GoTo(AppState.SourceSelect), 120));
+		row.AddChild(MakeSpacer());
+		_remoteContinue = MakeButton("Continuar ›", () => GoTo(AppState.AreaSelect), 160);
+		row.AddChild(_remoteContinue);
+		box.AddChild(row);
+
+		_remoteSeenConnected = _remote?.Connected ?? false;
+		SetScreen(margin);
+		UpdateRemoteInfo();
+	}
+
+	private void UpdateRemoteInfo()
+	{
+		if (_remote == null) return;
+		if (_remoteInfo != null)
+			_remoteInfo.Text = _remote.Connected ? $"Móvil conectado ({_remote.ClientAddress})" : "Esperando al móvil...";
+		if (_remoteContinue != null)
+			_remoteContinue.Disabled = !_remote.Connected;
+	}
+
+	/// <summary>Dibuja el texto como código QR (módulos negros sobre blanco, con margen).</summary>
+	private static ImageTexture? MakeQrTexture(string text)
+	{
+		try
+		{
+			const int scale = 8;     // píxeles por módulo
+			const int pad = 2;       // módulos blancos extra alrededor
+			using var generator = new QRCoder.QRCodeGenerator();
+			using var data = generator.CreateQrCode(text, QRCoder.QRCodeGenerator.ECCLevel.M);
+			var modules = data.ModuleMatrix;
+			int n = modules.Count;
+			int size = (n + pad * 2) * scale;
+
+			var pixels = new byte[size * size];
+			Array.Fill(pixels, (byte)255);
+			for (int my = 0; my < n; my++)
+			{
+				for (int mx = 0; mx < n; mx++)
+				{
+					if (!modules[my][mx]) continue;
+					for (int y = 0; y < scale; y++)
+					{
+						int row = ((my + pad) * scale + y) * size + (mx + pad) * scale;
+						for (int x = 0; x < scale; x++) pixels[row + x] = 0;
+					}
+				}
+			}
+			return ImageTexture.CreateFromImage(Image.CreateFromData(size, size, false, Image.Format.L8, pixels));
+		}
+		catch (Exception ex)
+		{
+			GD.PrintErr("No se pudo generar el QR: " + ex.Message);
+			return null;
+		}
 	}
 
 	// ------------------------------------------------------------ 1. Elegir cámara
@@ -154,6 +306,7 @@ public partial class Main
 		var bottom = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
 		var refresh = MakeButton("Actualizar", () => { StartScan(); BuildCameraScreen(null); }, 140);
 		refresh.Disabled = snapshots == null;
+		bottom.AddChild(MakeButton("‹ Inicio", () => GoTo(AppState.SourceSelect), 120));
 		bottom.AddChild(refresh);
 		box.AddChild(bottom);
 
@@ -178,8 +331,9 @@ public partial class Main
 		bottom.CustomMinimumSize = new Vector2(0, AreaBottomBar);
 		var row = new HBoxContainer();
 		row.AddThemeConstantOverride("separation", 12);
-		row.AddChild(MakeButton("‹ Cámaras", () => GoTo(AppState.CameraSelect), 120));
+		row.AddChild(MakeButton(_remote != null ? "‹ Móvil" : "‹ Cámaras", BackToSource, 120));
 		row.AddChild(MakeButton("Borrar puntos", ClearPoints, 140));
+		if (_remote != null) row.AddChild(MakeButton("Girar imagen 90°", RotateRemote, 170));
 		row.AddChild(MakeSpacer());
 		_areaContinue = MakeButton("Continuar ›", () => GoTo(AppState.Tuning), 160);
 		row.AddChild(_areaContinue);
@@ -204,19 +358,39 @@ public partial class Main
 
 	private void BuildTuningScreen()
 	{
-		var root = (HBoxContainer)FullRect(new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore });
-		root.AddChild(MakeSpacer());
+		var root = FullRect(new Control { MouseFilter = Control.MouseFilterEnum.Ignore });
 
+		// Panel de ajustes: pegado a la derecha y de ancho FIJO. Lo de dentro (con scroll) nunca puede ensancharlo,
+		// así que nunca tapa la imagen: PreviewRect() reserva exactamente este ancho.
 		var panel = MakePanel(0.92f);
-		panel.CustomMinimumSize = new Vector2(TuningPanelWidth, 0);
-		var box = new VBoxContainer();
-		box.AddThemeConstantOverride("separation", 10);
-		panel.AddChild(box);
+		AnchorRight(panel, TuningPanelWidth);
+		panel.ClipContents = true;
 
-		box.AddChild(MakeLabel("Paso 3 de 3 · Ajustes", 22));
-		var help = MakeLabel("Las figuras se pintan con su color: negro = plataforma, rojo = daño, amarillo = estrella, azul = inicio del jugador.");
+		var outer = new VBoxContainer();
+		outer.AddThemeConstantOverride("separation", 8);
+		panel.AddChild(outer);
+
+		var header = new HBoxContainer();
+		header.AddChild(MakeLabel("Paso 3 de 3 · Ajustes", 20));
+		header.AddChild(MakeSpacer());
+		var hide = MakeButton("Ocultar ›", () => SetTuningPanel(false));
+		hide.TooltipText = "Oculta el panel para ver toda la imagen (tecla H)";
+		header.AddChild(hide);
+		outer.AddChild(header);
+
+		var scroll = new ScrollContainer
+		{
+			SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+			HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever
+		};
+		var box = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+		box.AddThemeConstantOverride("separation", 10);
+		scroll.AddChild(box);
+		outer.AddChild(scroll);
+
+		var help = MakeLabel("Las figuras se pintan con su color: negro = plataforma, rojo = daño, amarillo = estrella, azul = inicio del jugador. Pulsa H para ocultar este panel y ver toda la imagen.");
 		help.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-		help.CustomMinimumSize = new Vector2(TuningPanelWidth - 30, 0);
+		help.CustomMinimumSize = new Vector2(TuningHintWidth, 0);
 		box.AddChild(help);
 
 		AddSlider(box, "Simplificación (px)", 0, 20, _config.Simplify,
@@ -226,21 +400,21 @@ public partial class Main
 			"Más alto = menos temblor. Mínimo efectivo 1.",
 			v => { _config.Stability = v; ApplyParams(); });
 		AddSlider(box, "Sensibilidad (0 = auto)", 0, 40, _config.Sensitivity,
-			"Cuánto se tiene que diferenciar un trazo del papel. 0 = se calcula sola.",
+			"Cuánto se tiene que diferenciar un trazo del papel. 0 = se calcula sola. Las sombras suaves no cuentan como trazo.",
 			v => { _config.Sensitivity = v; ApplyParams(); });
 		AddSlider(box, "Color mínimo (0 = auto)", 0, 30, _config.ColorMin,
 			"Cuánto color hace falta para no ser negro. Bájalo si un azul oscuro sale negro. 0 = auto.",
 			v => { _config.ColorMin = v; ApplyParams(); });
+		AddSlider(box, "Grosor mínimo (px)", 1, 15, _config.MinThickness,
+			"Lo más fino que esto se ignora (arañazos, polvo, rayas del papel). Bájalo si dibujas con trazo fino; 1 = sin límite.",
+			v => { _config.MinThickness = v; ApplyParams(); });
 
-		var check = new CheckBox { Text = "Ver las formas (coloreadas) durante el juego", ButtonPressed = _config.ShowDetection };
-		check.Toggled += on => _config.ShowDetection = on;
-		box.AddChild(check);
-
-		var starCheck = new CheckBox { Text = "Estrella = el propio dibujo amarillo (se borra al cogerla)", ButtonPressed = _config.StarsAsDrawing };
-		starCheck.Toggled += on => { _config.StarsAsDrawing = on; ApplyParams(); };
-		box.AddChild(starCheck);
-
-		box.AddChild(MakeSpacer());
+		AddCheck(box, "Ver formas en el juego", _config.ShowDetection,
+			"Pinta encima de la imagen lo que se detecta (tecla V durante el juego).",
+			on => _config.ShowDetection = on);
+		AddCheck(box, "Estrella = dibujo amarillo", _config.StarsAsDrawing,
+			"El dibujo amarillo se borra de la imagen al cogerlo. Si no, aparece una estrella dibujada.",
+			on => { _config.StarsAsDrawing = on; ApplyParams(); });
 
 		var row = new HBoxContainer();
 		row.AddThemeConstantOverride("separation", 10);
@@ -248,10 +422,55 @@ public partial class Main
 		var go = MakeButton("Continuar al juego ›", () => GoTo(AppState.Game));
 		go.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
 		row.AddChild(go);
-		box.AddChild(row);
+		outer.AddChild(row);
+
+		// Barra estrecha que sustituye al panel cuando está oculto (la imagen no se solapa con ella)
+		var bar = MakePanel(0.92f);
+		AnchorRight(bar, TuningCollapsedWidth);
+		var showButton = MakeButton("‹", () => SetTuningPanel(true));
+		showButton.TooltipText = "Mostrar los ajustes (tecla H)";
+		showButton.SizeFlagsVertical = Control.SizeFlags.ShrinkBegin;   // un botón arriba, no una barra entera
+		bar.AddChild(showButton);
 
 		root.AddChild(panel);
+		root.AddChild(bar);
+		_tuningPanel = panel;
+		_tuningCollapsed = bar;
 		SetScreen(root);
+		SetTuningPanel(true);
+	}
+
+	/// <summary>Muestra u oculta el panel de ajustes. La imagen se recoloca sola (ver PreviewRect).</summary>
+	private void SetTuningPanel(bool open)
+	{
+		_tuningPanelOpen = open;
+		if (_tuningPanel != null) _tuningPanel.Visible = open;
+		if (_tuningCollapsed != null) _tuningCollapsed.Visible = !open;
+	}
+
+	/// <summary>Pega el control al borde derecho, a todo lo alto, con un ancho fijo (si no cabe, crece hacia dentro, no hacia fuera).</summary>
+	private static void AnchorRight(Control control, float width)
+	{
+		control.SetAnchorsPreset(Control.LayoutPreset.RightWide);
+		control.OffsetLeft = -width;
+		control.OffsetRight = 0;
+		control.OffsetTop = 0;
+		control.OffsetBottom = 0;
+		control.GrowHorizontal = Control.GrowDirection.Begin;
+	}
+
+	private static void AddCheck(Control parent, string title, bool value, string hint, Action<bool> onChange)
+	{
+		var check = new CheckBox { Text = title, ButtonPressed = value };
+		check.Toggled += on => onChange(on);
+
+		var hintLabel = MakeLabel(hint, 13);
+		hintLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		hintLabel.CustomMinimumSize = new Vector2(TuningHintWidth, 0);
+		hintLabel.Modulate = new Color(1, 1, 1, 0.65f);
+
+		parent.AddChild(check);
+		parent.AddChild(hintLabel);
 	}
 
 	private static void AddSlider(Control parent, string title, int min, int max, int value, string hint, Action<int> onChange)
@@ -275,7 +494,7 @@ public partial class Main
 
 		var hintLabel = MakeLabel(hint, 13);
 		hintLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-		hintLabel.CustomMinimumSize = new Vector2(TuningPanelWidth - 30, 0);
+		hintLabel.CustomMinimumSize = new Vector2(TuningHintWidth, 0);
 		hintLabel.Modulate = new Color(1, 1, 1, 0.65f);
 
 		parent.AddChild(label);
@@ -318,7 +537,8 @@ public partial class Main
 		menuBox.AddChild(MakeButton("Seguir jugando", ToggleMenu, 260));
 		menuBox.AddChild(MakeButton("Ajustes de detección", () => GoTo(AppState.Tuning), 260));
 		menuBox.AddChild(MakeButton("Esquinas del área", () => GoTo(AppState.AreaSelect), 260));
-		menuBox.AddChild(MakeButton("Cambiar de cámara", () => GoTo(AppState.CameraSelect), 260));
+		menuBox.AddChild(MakeButton("Cambiar de cámara", BackToSource, 260));
+		menuBox.AddChild(MakeButton("Elegir origen (PC / móvil)", () => GoTo(AppState.SourceSelect), 260));
 		menu.AddChild(menuBox);
 		center.AddChild(menu);
 		center.Visible = false;
@@ -356,6 +576,6 @@ public partial class Main
 	private void UpdateHud()
 	{
 		if (_hud != null)
-			_hud.Text = $"Estrellas {_level.StarsCollected}/{_level.StarsTotal}  |  V = {(_config.ShowDetection ? "ocultar" : "ver")} formas  |  Mover: A/D o flechas  |  Saltar: W o espacio  |  Esc = menú";
+			_hud.Text = $"{_mode.HudText}  |  V = {(_config.ShowDetection ? "ocultar" : "ver")} formas  |  Mover: A/D o flechas  |  Saltar: W o espacio  |  Esc = menú";
 	}
 }

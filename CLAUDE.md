@@ -30,5 +30,6 @@ Cada archivo amplía un tema concreto. Léelo solo cuando la tarea lo requiera.
 | **Estado actual y traspaso entre conversaciones (leer primero)** | `AIDocs/estado-actual.md` |
 | Estabilización de formas entre fotogramas | `AIDocs/estabilizacion.md` |
 | Godot: guía para principiante y plan de integración | `AIDocs/godot.md` |
+| Cámara del móvil: app Android, servidor en Godot, protocolo | `AIDocs/movil.md` |
 | Decisiones tomadas y alternativas descartadas | `AIDocs/decisiones.md` |
 | Roadmap y siguientes pasos | `AIDocs/roadmap.md` |

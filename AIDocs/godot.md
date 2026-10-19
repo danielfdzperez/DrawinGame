@@ -118,18 +118,57 @@ DrawinGame/
 ### Datos detector → juego
 No hay JSON: el hilo de cámara deja en memoria un `List<DetectedShape>` y `Main._Process` lo recoge con `TryGetShapes` (lock + número de versión). `DetectedShape` = `Outline`, `Holes`, `Ink` (Black/Red/Yellow/Green/Blue), `Color` (media real), **`Id` estable** (lo asigna `ShapeStabilizer` y se mantiene mientras la figura se reconoce como la misma), `Centroid`, `Area`. Con Estabilidad 0 el estabilizador no asigna Ids, por eso Godot usa como mínimo 1.
 
-### Reglas por color (`scripts/LevelManager.cs`)
-Tabla `ColorRules` en `user://config.json` (color → tipo). Por defecto: Black → Platform (StaticBody2D, solo colisión), Red → Hazard (StaticBody2D del grupo `hazard`; `Player` muere al tocarlo y reaparece), Yellow → Star (escena `scenes/star.tscn` + `Star.cs` en el centroide; ignora la forma), Blue → Start (el jugador aparece en su centroide), Green → None. Tipos: `ObjectKind { None, Platform, Hazard, Star, Start }`. Para añadir un tipo: valor en el enum + rama en `LevelManager.CreateEntry/UpdateEntry`.
+### Reglas por color
+**Obsoleto desde §14**: la tabla ya no está en `config.json`; vive en un recurso `ColorRuleSet` (`rules/*.tres`) editable en el Inspector. Por defecto (`platformer.tres`): Black → Platform (StaticBody2D, solo colisión), Red → Hazard (grupo `hazard`; `Player` muere al tocarlo y reaparece), Yellow → Star (escena `scenes/star.tscn` + `Star.cs` en el centroide; ignora la forma), Blue → Start (el jugador aparece en su centroide), Green → None. Ver §14.
 
 ### Regenerador
 `LevelManager.Apply` mantiene un objeto de Godot por `Id`: si el Id sigue, se actualiza (colisiones nuevas, o la estrella se mueve si el centroide cambia > 3 px) sin destruirlo; si cambia de tipo, el centroide salta > 200 px o el área sale del rango 0.4–2.5×, se destruye y se crea otro; si el Id desaparece, se elimina. Así una estrella cogida sigue cogida aunque el dibujo tiemble.
 
 ### Victoria
-Al coger todas las estrellas que hay (mínimo una) sale «¡Has ganado!» con «Jugar de nuevo» (restaura las estrellas). HUD: `Estrellas cogidas/total`. Entrar en el juego (desde Ajustes, etc.) empieza partida nueva (`LevelManager.Clear`).
+Al coger todas las estrellas que hay (mínimo una) sale «¡Has ganado!» con «Jugar de nuevo» (restaura las estrellas). HUD: `Estrellas cogidas/total`. Entrar en el juego (desde Ajustes, etc.) empieza partida nueva (`LevelManager.Clear`). La lógica de victoria está ahora en `StarCollectMode` (§14).
 
 ### Pendiente
 - Escrito a ciegas: compilar en Godot (Build) y pegar errores. Abrir el proyecto una vez para que Godot genere los `.uid` de `Star.cs` y `LevelManager.cs`.
 - Verde sin función; vidas (de momento morir = reaparecer); el dibujo de la estrella se puede cambiar en `star.tscn`.
 
+## 12. Origen de la cámara: PC o móvil (2026-10-19)
+Nueva primera pantalla (`SourceSelect`): «Cámara del PC» o «Cámara del móvil». Con el móvil, `RemoteWait` muestra un QR y espera a la app Android; al conectarse pasa a Esquinas. Detalle completo, protocolo y dudas en `AIDocs/movil.md`. Cambios: `vision/ICameraSource.cs`, `WebcamSource.cs`, `RemoteFrameReceiver.cs`, `IRemoteTransport.cs`, `TcpFrameTransport.cs` (nuevos; `CameraService.Start(ICameraSource)`), `Main`/`MainUi` (estados nuevos, «Girar imagen 90°» en Esquinas, menú del juego con «Elegir origen»), `AppConfig` (`Source`, `RemotePort`, `RemoteToken`, `RemoteRotation`), paquete NuGet `QRCoder`. Escrito a ciegas: compilar (Build) y pegar errores.
+
 ### Estrella como dibujo (opción `StarsAsDrawing`, por defecto activada)
 Casilla en Ajustes: «Estrella = el propio dibujo amarillo (se borra al cogerla)». Con ella, la figura amarilla no se sustituye por el gráfico de `star.tscn` (se oculta; queda solo una zona de recogida invisible de radio √(área/π), entre 14 y 70 px). Al coger la estrella, `LevelManager.CollectedStarIds()` → `CameraService.SetErasedIds()`: la imagen mostrada rellena (inpainting Telea en una ventana pequeña) la zona de esa figura con el tono del papel de alrededor. Solo se borra la imagen mostrada: el detector sigue viendo la figura, así que la estrella conserva su Id y su estado «cogida». «Jugar de nuevo» o salir a Ajustes vuelve a mostrar el dibujo. Limitación: si la figura amarilla desaparece de la cámara más de 3 fotogramas (p. ej. la mano la tapa) se pierde su Id y la estrella se da por eliminada.
+
+## 13. Pantalla de ajustes: el panel nunca tapa la imagen (2026-10-19)
+**Fallo**: el panel tenía `CustomMinimumSize` de 340 px, pero el texto del `CheckBox` «Estrella = el propio dibujo amarillo (se borra al cogerla)» no se parte en líneas; la anchura mínima del contenido superaba los 340 px y el `PanelContainer` crecía, tapando parte de la imagen (que se había colocado a la izquierda de 340 px exactos).
+
+**Ahora** (`MainUi.BuildTuningScreen`): panel pegado a la derecha con **ancho fijo** (`AnchorRight`, anclas `RightWide` + `OffsetLeft = -TuningPanelWidth`, `GrowHorizontal = Begin`, `ClipContents`), contenido dentro de un `ScrollContainer` (sin scroll horizontal), casillas con texto corto + ayuda en un `Label` con autowrap de `TuningHintWidth` (= panel − 56). `PreviewRect` reserva exactamente ese ancho, y la imagen entera cabe a la izquierda (TextureRect `KeepAspectCentered`).
+- **Ocultar/mostrar**: botón «Ocultar ›» o tecla **H**. Oculto, el panel se reduce a una barra de 48 px (`TuningCollapsedWidth`) con un botón «‹»; la imagen usa todo el resto y no se solapa con nada.
+- Nuevo deslizador «Grosor mínimo (px)» (`AppConfig.MinThickness`, por defecto 7).
+- Regla para futuros paneles: nada con texto largo sin `AutowrapMode` dentro de un panel de ancho fijo; el ancho de la imagen se calcula en `PreviewRect`, no por el layout.
+
+## 14. Separación de responsabilidades: reglas de color, nivel y modo de juego (2026-10-19)
+Antes `LevelManager` lo hacía todo (traducir color→tipo, crear objetos, contar estrellas y decidir la victoria). Ahora son cuatro piezas, cada una con un único trabajo:
+
+| Pieza | Archivo | Qué hace | Qué NO sabe |
+|---|---|---|---|
+| Visión | `vision/*` | Produce `DetectedShape` (contorno, huecos, `Ink`, `Id`, centroide, área) | Nada del juego |
+| Clasificador | `scripts/rules/IShapeClassifier.cs`, `ColorRuleSet.cs` | **Único sitio** que traduce «lo que se ve» a un `ObjectKind` | Cómo se crean los objetos ni cómo se gana |
+| Nivel | `scripts/LevelManager.cs` | Crea/actualiza/elimina los nodos de Godot por `Id`; lanza `ObjectCreated` y `LevelChanged` | Qué significa un color; reglas de victoria |
+| Modo de juego | `scripts/modes/IGameMode.cs`, `StarCollectMode.cs` | Cuenta, decide la victoria, da el texto del HUD y qué dibujos borrar | Colores; cámara |
+| Orquestador | `scripts/Main.cs` | Conecta todo; exporta `Rules` | — |
+
+`ObjectKind` (`scripts/rules/ObjectKind.cs`): `None, Platform, Hazard, Star, Start`. **No cambiar el orden**: los `.tres` guardan el número.
+
+### Cambiar cómo se mapean los colores desde el editor (paso a paso)
+1. Abre el proyecto y pulsa **Build** (martillo, arriba a la derecha) para que Godot conozca la clase `ColorRuleSet`.
+2. En el panel **FileSystem** (abajo a la izquierda) abre la carpeta `rules/` y haz **doble clic en `platformer.tres`**: el **Inspector** (derecha) muestra el grupo «Qué es cada color» con un desplegable por color (Black, Red, Yellow, Green, Blue). Cambia el que quieras; **Ctrl+S** guarda.
+3. «Si el color no importa»: marca **Ignore Color** y elige en **Any Color Kind** qué es toda figura dibujada (se ignora la tabla de arriba). Ejemplo ya hecho: `rules/sin_color.tres`.
+4. Para crear un juego nuevo con otras reglas: en FileSystem, clic derecho sobre `rules/` → **Create New → Resource…** → busca **ColorRuleSet** → Crear → nómbralo (`mi_juego.tres`) y edítalo como arriba.
+5. Para usarlo: abre `main.tscn`, selecciona el nodo **Main** y en el Inspector, propiedad **Rules**, arrastra el `.tres` (o desplegable → Load). Si se deja vacía se usa `res://rules/platformer.tres` y, si no existe, los valores por defecto del código.
+
+### Añadir otro tipo de juego
+- Otro `IGameMode` (reglas distintas) y, si hace falta, otro `ColorRuleSet` o una clase propia que implemente `IShapeClassifier` (p. ej. por tamaño o forma, no solo por color). `Main._Ready` crea el modo (`new StarCollectMode(_level)`).
+- Añadir un tipo de objeto: valor **al final** del enum `ObjectKind` + rama en `LevelManager.CreateEntry/UpdateEntry`.
+- La clave `ColorRules` de `config.json` ya no se usa (se ignora si aparece).
+
+### Bug del reinicio (estrella recién cogida ya cogida)
+Síntoma: tras coger la última estrella y «Jugar de nuevo», esa estrella nacía cogida. **Causa probable (hipótesis, sin verificar en ejecución)**: al ganar se desactiva al jugador, que queda en el motor de física encima de la última estrella; al reiniciar, la estrella reactivaba su `Monitoring` antes de que el motor supiera que el jugador ya estaba en el punto de salida, y lo detectaba «dentro» al instante. Arreglo en dos capas: `Player.TeleportTo` comunica la posición nueva al motor al momento (`PhysicsServer2D.BodySetState`), y `Star.ResetStar` muestra la estrella pero reactiva la zona de recogida **dos fotogramas de física después** (con un token para descartar rearmes obsoletos). Orden en `Main.RestartGame`: recolocar jugador → activarlo → `_mode.Restart()`.

@@ -2,12 +2,14 @@
 
 [ext_resource type="Script" uid="uid://dvdp04axylg28" path="res://scripts/Main.cs" id="1_0xm2m"]
 [ext_resource type="PackedScene" uid="uid://clrefiruoein1" path="res://scenes/player.tscn" id="1_ig7tw"]
+[ext_resource type="Resource" path="res://rules/platformer.tres" id="2_rules"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_260lg"]
 size = Vector2(1000, 40)
 
 [node name="Main" type="Node2D" unique_id=1581025873]
 script = ExtResource("1_0xm2m")
+Rules = ExtResource("2_rules")
 
 [node name="FLoor" type="StaticBody2D" parent="." unique_id=706763390]
 position = Vector2(572, 647)
